@@ -1,0 +1,5 @@
+allowBuilds:
+  protobufjs: true
+minimumReleaseAgeExclude:
+  - '@openai/codex-sdk@0.161.0'
+  - '@openai/codex@0.161.0-darwin-arm64 || 0.161.0-darwin-x64 || 0.161.0-linux-arm64 || 0.161.0-linux-x64 || 0.161.0-win32-arm64 || 0.161.0-win32-x64 || 0.161.0'

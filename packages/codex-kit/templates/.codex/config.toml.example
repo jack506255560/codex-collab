@@ -1,4 +1,5 @@
-# Template only. Deploy the authenticated service and replace this URL before enabling
-# as `.codex/config.toml`. Never commit personal access tokens into this file.
+# Add to PERSONAL ~/.codex/config.toml (not tracked in the project).
+# The Codex process must have the per-person COLLAB_TOKEN in its environment.
 [mcp_servers.team-collab]
 url = "https://collab.example.invalid/mcp"
+bearer_token_env_var = "COLLAB_TOKEN"

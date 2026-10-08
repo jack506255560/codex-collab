@@ -8,7 +8,7 @@ const transitions = Object.freeze({
   },
   blocked: { assigned: 'assigned', cancelled: 'cancelled' },
   waiting: { assigned: 'assigned', cancelled: 'cancelled' },
-  review: { reviewed: (event) => event.decision === 'approved' ? 'approved' : 'blocked', cancelled: 'cancelled' },
+  review: { review_started: 'review', review_note: 'review', reviewed: (event) => event.decision === 'approved' ? 'approved' : 'blocked', cancelled: 'cancelled' },
   approved: { completed: 'completed', cancelled: 'cancelled' },
   completed: {},
   cancelled: {}
@@ -49,7 +49,10 @@ export function reduceTask(spec, events) {
     if (event.type === 'reviewed' && !['approved', 'changes_requested'].includes(event.decision)) throw new Error('review requires a valid decision');
     if (event.type === 'completed' && (!event.refs || !event.refs.commit || !event.refs.tests)) throw new Error('completion requires commit and test evidence');
     status = typeof transition === 'function' ? transition(event) : transition;
-    if (event.type === 'assigned') assignee = event.assignee;
+    if (event.type === 'assigned' || event.type === 'review_requested') {
+      if (!event.assignee || typeof event.assignee !== 'string') throw new Error('assignment requires an assignee');
+      assignee = event.assignee;
+    }
     eventIds.add(event.event_id);
     idempotencyKeys.add(event.idempotency_key);
     seq = event.seq;

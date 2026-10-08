@@ -1,6 +1,6 @@
 # Repository instructions
 
-This repository contains tooling for a multi-user Codex collaboration system. The current state is a scaffold, not a deployed MCP server or Feishu bot.
+This repository contains tooling for a multi-user Codex collaboration system. The server, Git store and Runner are implemented and locally tested; real Feishu group access and cross-machine Git are not yet deployed or verified.
 
 - Keep task protocol and JSON Schemas in sync; add tests for state transitions and invalid input.
 - Never commit OAuth tokens, Feishu credentials, Codex authentication, private chat transcripts, or local absolute paths.

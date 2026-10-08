@@ -1,0 +1,14 @@
+import { mkdir, copyFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+const [url] = process.argv.slice(2);
+if (!url || !/^https?:\/\//.test(url)) throw new Error('usage: node scripts/install/install.mjs <https://server.example/mcp>');
+const codex = resolve(process.env.CODEX_HOME || join(homedir(), '.codex'));
+const dir = join(codex, 'skills', 'team-collab');
+await mkdir(dir, { recursive: true });
+await copyFile(new URL('../../packages/codex-kit/templates/.agents/skills/team-collab/SKILL.md', import.meta.url), join(dir, 'SKILL.md'));
+const file = join(codex, 'team-collab-mcp.toml.example');
+await writeFile(file, `# Copy this block into your personal config.toml. Never commit a real token.\n[mcp_servers.team-collab]\nurl = ${JSON.stringify(url)}\nbearer_token_env_var = "COLLAB_TOKEN"\n`);
+console.log(`Skill installed: ${dir}`);
+console.log(`MCP config example (not automatically merged into your config): ${file}`);
+console.log('Export your own COLLAB_TOKEN in the environment of the Codex process, then add the config block and restart Codex.');

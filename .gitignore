@@ -6,3 +6,9 @@ coverage/
 .env.*
 !.env.example
 *.log
+
+# Local runtime and personal identity files
+.collab-data/
+.collab-runner/
+accounts.json
+*.accounts.json

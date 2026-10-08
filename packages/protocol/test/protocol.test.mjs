@@ -15,7 +15,7 @@ test('a complete reviewed task retains its owner and sequence', () => {
   const events = [
     event(1, 'created'), event(2, 'assigned', { assignee: 'bob' }),
     event(3, 'run_started'), event(4, 'progress'),
-    event(5, 'review_requested'), event(6, 'reviewed', { decision: 'approved' }),
+    event(5, 'review_requested', { assignee: 'bob' }), event(6, 'reviewed', { decision: 'approved' }),
     event(7, 'completed', { refs: { commit: 'abc123', tests: 'sh test.sh passed' } })
   ];
   assert.deepEqual(reduceTask(spec, events), { id: 'T-001', status: 'completed', assignee: 'bob', seq: 7 });
@@ -23,7 +23,7 @@ test('a complete reviewed task retains its owner and sequence', () => {
 
 test('review changes requested returns to blocked then can be reassigned', () => {
   const events = [event(1, 'created'), event(2, 'assigned', { assignee: 'bob' }),
-    event(3, 'run_started'), event(4, 'review_requested'),
+    event(3, 'run_started'), event(4, 'review_requested', { assignee: 'bob' }),
     event(5, 'reviewed', { decision: 'changes_requested' }),
     event(6, 'assigned', { assignee: 'bob' })];
   assert.equal(reduceTask(spec, events).status, 'assigned');
@@ -39,7 +39,7 @@ test('rejects invalid ordering, duplicates and unsupported schema', () => {
 test('cannot complete without review and evidence', () => {
   assert.throws(() => reduceTask(spec, [event(1, 'created'), event(2, 'completed')]), /invalid transition/);
   const events = [event(1, 'created'), event(2, 'assigned', { assignee: 'bob' }),
-    event(3, 'run_started'), event(4, 'review_requested'),
+    event(3, 'run_started'), event(4, 'review_requested', { assignee: 'bob' }),
     event(5, 'reviewed', { decision: 'approved' }), event(6, 'completed')];
   assert.throws(() => reduceTask(spec, events), /evidence/);
 });
