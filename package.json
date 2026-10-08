@@ -1,0 +1,10 @@
+{
+  "name": "codex-collab",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test packages/protocol/test/*.test.mjs"
+  }
+}

@@ -1,0 +1,4 @@
+# Template only. Deploy the authenticated service and replace this URL before enabling
+# as `.codex/config.toml`. Never commit personal access tokens into this file.
+[mcp_servers.team-collab]
+url = "https://collab.example.invalid/mcp"

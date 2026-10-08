@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codex-collab:event:v1",
+  "title": "Codex Collab Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "task_id", "seq", "type", "actor_id", "occurred_at", "idempotency_key"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "event_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "pattern": "^[A-Z][A-Z0-9-]{1,63}$" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "type": { "enum": ["created", "assigned", "run_started", "progress", "blocked", "run_failed", "handoff", "review_requested", "reviewed", "completed", "cancelled"] },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "maxLength": 4000 },
+    "assignee": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "decision": { "enum": ["approved", "changes_requested"] },
+    "refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "branch": { "type": "string" },
+        "commit": { "type": "string" },
+        "pr": { "type": "string" },
+        "tests": { "type": "string" }
+      }
+    }
+  }
+}
