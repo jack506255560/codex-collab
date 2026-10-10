@@ -5,8 +5,10 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PassThrough } from 'node:stream';
+import { setImmediate } from 'node:timers/promises';
 import { generateIdentity } from '../../../packages/peer/config.mjs';
-import { attachProject, buildTeamPolicy, createIdentityFiles, createMemberConfig, diagnosePeer, writeTeamPolicy } from '../onboarding.mjs';
+import { attachProject, buildTeamPolicy, createIdentityFiles, createMemberConfig, createPrompts, diagnosePeer, runSetupWizard, writeTeamPolicy } from '../onboarding.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const cli = join(root, 'bin/codex-collab.mjs');
@@ -107,4 +109,80 @@ test('CLI help documents the installable onboarding commands', () => {
   assert.match(out, /codex-collab setup/);
   assert.match(out, /identity create/);
   assert.match(out, /Never pass a bot Secret/);
+});
+
+function promptStreams(t) {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  input.isTTY = output.isTTY = true;
+  output.columns = 80;
+  input.isRaw = false;
+  const rawModes = [];
+  input.setRawMode = (enabled) => { input.isRaw = enabled; rawModes.push(enabled); };
+  let transcript = '';
+  output.on('data', (chunk) => { transcript += chunk.toString(); });
+  t.after(() => { input.destroy(); output.destroy(); });
+  return { input, output, rawModes, transcript: () => transcript };
+}
+
+test('interactive prompts await typed input, trim answers and apply defaults', { timeout: 5000 }, async (t) => {
+  const { input, output } = promptStreams(t);
+  const prompts = createPrompts(input, output);
+  t.after(prompts.close);
+  const answer = prompts.ask('Agent ID');
+  input.write('  bob  \n');
+  assert.equal(await answer, 'bob');
+  let settled = false;
+  const choice = prompts.ask('Role', '2').then((value) => { settled = true; return value; });
+  await setImmediate();
+  assert.equal(settled, false, 'the prompt must wait for input');
+  input.write('\n');
+  assert.equal(await choice, '2');
+});
+
+test('interactive required prompts retry blank answers and confirmations honor defaults', { timeout: 5000 }, async (t) => {
+  const { input, output, transcript } = promptStreams(t);
+  const prompts = createPrompts(input, output);
+  t.after(prompts.close);
+  const required = prompts.required('Agent ID');
+  input.write('   \n');
+  await setImmediate();
+  assert.match(transcript(), /需要填写此项/);
+  input.write('alice\n');
+  assert.equal(await required, 'alice');
+  for (const [answer, defaultYes, expected] of [['', true, true], ['', false, false], ['YES', false, true], ['n', true, false]]) {
+    const confirmed = prompts.confirm('Continue', defaultYes);
+    input.write(`${answer}\n`);
+    assert.equal(await confirmed, expected);
+  }
+});
+
+test('hidden Secret input restores normal prompts without echoing the credential', { timeout: 5000 }, async (t) => {
+  const { input, output, rawModes, transcript } = promptStreams(t);
+  const prompts = createPrompts(input, output);
+  t.after(prompts.close);
+  const botId = prompts.required('Bot ID');
+  input.write('test-bot\n');
+  assert.equal(await botId, 'test-bot');
+  const secret = prompts.secret('Secret');
+  input.write('dummy-test-secretX\u007f\r');
+  assert.equal(await secret, 'dummy-test-secret');
+  assert.deepEqual(rawModes, [true, false, true, false, true]);
+  assert.equal(input.isRaw, true, 'terminal readline must resume its normal input mode');
+  const chatid = prompts.required('Group chatid');
+  input.write(' test-chatid \n');
+  assert.equal(await chatid, 'test-chatid');
+  assert.doesNotMatch(transcript(), /dummy-test-secret/);
+  prompts.close();
+  assert.equal(input.isRaw, false);
+});
+
+test('setup menu reads and validates the selected role', { timeout: 5000 }, async (t) => {
+  const { input, output, transcript } = promptStreams(t);
+  const rejected = assert.rejects(runSetupWizard({ input, output }), /请选择 1（管理员）或 2（成员）/);
+  input.write('3\n');
+  await rejected;
+  assert.match(transcript(), /Codex Collab setup/);
+  assert.match(transcript(), /初始化团队（管理员）/);
+  assert.match(transcript(), /加入现有团队（成员）/);
 });

@@ -1,6 +1,7 @@
 import { createPublicKey } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { createInterface, emitKeypressEvents } from 'node:readline';
+import { emitKeypressEvents } from 'node:readline';
+import { createInterface } from 'node:readline/promises';
 import { chmod, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
