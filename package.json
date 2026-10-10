@@ -1,13 +1,41 @@
 {
-  "name": "codex-collab",
-  "private": true,
-  "version": "0.0.0",
+  "name": "xuym-codex-collab",
+  "version": "0.1.0",
+  "description": "Git-backed collaboration tools for Codex teams, with MCP, WeCom, and local runners.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jack506255560/codex-collab.git"
+  },
+  "homepage": "https://github.com/jack506255560/codex-collab#readme",
+  "bugs": {
+    "url": "https://github.com/jack506255560/codex-collab/issues"
+  },
+  "keywords": [
+    "codex",
+    "mcp",
+    "agent",
+    "collaboration",
+    "wecom"
+  ],
   "type": "module",
+  "bin": {
+    "codex-collab": "bin/codex-collab.mjs"
+  },
+  "files": [
+    "bin/",
+    "apps/peer/*.mjs",
+    "packages/peer/*.mjs",
+    "packages/codex-kit/templates/",
+    "scripts/peer/*.mjs",
+    "scripts/wecom-diagnostic.mjs",
+    "README.md",
+    "docs/"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test packages/protocol/test/*.test.mjs packages/git-store/test/*.test.mjs packages/peer/test/*.test.mjs apps/server/test/*.test.mjs apps/peer/test/*.test.mjs tests/e2e/*.test.mjs",
+    "test": "node --test packages/protocol/test/*.test.mjs packages/git-store/test/*.test.mjs packages/peer/test/*.test.mjs apps/server/test/*.test.mjs apps/peer/test/*.test.mjs scripts/peer/test/*.test.mjs tests/e2e/*.test.mjs",
     "server": "node apps/server/main.mjs",
     "runner": "node apps/runner/main.mjs",
     "peer:mcp": "node apps/peer/mcp-main.mjs",

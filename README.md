@@ -6,11 +6,18 @@
 
 已实现 Git 签名账本、MCP、企微/飞书适配、后台 Codex SDK Runner，以及桌面手动交接。2026-10-09 已在真实企业微信群完成后台 SDK Alice → Bob 的准确 SHA 接力，最终测试通过并等待真人审核；这不等于绑定已有桌面对话，跨两台机器仍未验证。
 
-**指定已有桌面对话轮询模式 `desktop_poll` 已完成本机真实闭环验证**。据用户于 2026-10-10 确认，真实企业微信群任务已由 Alice 的既有 Codex 对话接单执行，再由 Bob 的既有 Codex 对话接力；本机适配器负责收群消息/发通知，MCP 提供对话绑定、原子接单、隔离工作树、续租、固定测试和交接，已有对话的 app heartbeat 负责轮询。跨两台机器部署仍未验证。本轮全套自动测试 58 项通过。操作见 [`docs/desktop-poll.md`](docs/desktop-poll.md)。
+**指定已有桌面对话轮询模式 `desktop_poll` 已完成本机真实闭环验证**。据用户于 2026-10-10 确认，真实企业微信群任务已由 Alice 的既有 Codex 对话接单执行，再由 Bob 的既有 Codex 对话接力；本机适配器负责收群消息/发通知，MCP 提供对话绑定、原子接单、隔离工作树、续租、固定测试和交接，已有对话的 app heartbeat 负责轮询。跨两台机器部署仍未验证。当前全套自动测试 62 项通过。操作见 [`docs/desktop-poll.md`](docs/desktop-poll.md)。
 
 ## 推荐：Peer 模式（不部署中心服务）
 
 如果不想运行共享 HTTP 服务，使用已实现的 Peer 模式：每位同事本机安装 Skill + stdio MCP，并运行自己的 Peer Runner；任务、签名事件、候补分配和交接 commit 直接写入目标仓库的 `agent-collab` 分支。企业微信机器人是可选的命令/通知适配器，不是调度真相。
+
+面向团队成员的 npm CLI 接入说明见 [`docs/onboarding.md`](docs/onboarding.md)。公开 npm 包名为 `xuym-codex-collab`，安装后使用 `codex-collab` 命令：
+
+```sh
+npm install --global xuym-codex-collab
+codex-collab --help
+```
 
 ```sh
 pnpm peer:create-team /abs/team.json repo-id alice frontend \
