@@ -19,6 +19,12 @@ export function makeMcpServer(service, user) {
   }), ({ idempotency_key, ...input }) => service.create(user, input, idempotency_key));
   tool('assign_task', 'Assign a task (admins only)', z.object({ task_id: required, assignee: required, idempotency_key: z.string().optional() }),
     ({ task_id, assignee, idempotency_key }) => service.assign(user, task_id, assignee, idempotency_key));
+  tool('handoff_task', 'Publish a tested code commit and next-step summary so a teammate can continue from that exact commit; the admin then assigns the waiting task', z.object({
+    task_id: required, expected_seq: z.number().int().nonnegative(), summary: z.string().trim().min(1).max(4000),
+    branch: z.string().startsWith('codex/'), commit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i),
+    tests: z.string().trim().min(1).max(1000), idempotency_key: z.string().optional()
+  }), ({ task_id, expected_seq, summary, branch, commit, tests, idempotency_key }) =>
+    service.report(user, task_id, { type: 'handoff', summary, refs: { branch, commit, tests } }, expected_seq, idempotency_key));
   tool('report_task', 'Append a progress, blocked, handoff or review event with optimistic revision control', z.object({
     task_id: required, expected_seq: z.number().int().nonnegative(),
     type: z.enum(['progress', 'blocked', 'handoff', 'review_requested', 'reviewed', 'review_note', 'run_failed', 'completed', 'cancelled']),

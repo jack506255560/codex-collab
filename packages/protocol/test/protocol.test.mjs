@@ -43,3 +43,12 @@ test('cannot complete without review and evidence', () => {
     event(5, 'reviewed', { decision: 'approved' }), event(6, 'completed')];
   assert.throws(() => reduceTask(spec, events), /evidence/);
 });
+
+test('desktop creator can hand off an open task, and the next agent may be assigned', () => {
+  const handoff = event(2, 'handoff', { summary: 'Feature A tested; implement feature B',
+    refs: { branch: 'codex/alice-feature', commit: 'a'.repeat(40), tests: 'sh test.sh passed' } });
+  assert.equal(reduceTask(spec, [event(1, 'created'), handoff]).status, 'waiting');
+  assert.deepEqual(reduceTask(spec, [event(1, 'created'), handoff, event(3, 'assigned', { assignee: 'bob' })]),
+    { id: spec.id, status: 'assigned', assignee: 'bob', seq: 3 });
+  assert.throws(() => reduceTask(spec, [event(1, 'created'), event(2, 'handoff', { summary: 'no proof' })]), /handoff requires/);
+});

@@ -106,7 +106,7 @@ export class GitTaskStore {
         seq: expectedSeq + 1, type: payload.type, actor_id: actor,
         occurred_at: new Date().toISOString(), idempotency_key: key
       };
-      for (const field of ['summary', 'assignee', 'run_id', 'decision', 'refs', 'chat_id']) {
+      for (const field of ['summary', 'assignee', 'run_id', 'decision', 'refs', 'chat_id', 'channel']) {
         if (payload[field] !== undefined) event[field] = payload[field];
       }
       // The reducer must accept the transition before any filesystem change.

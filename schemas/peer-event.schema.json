@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codex-collab:peer-event:v2",
+  "title": "Codex Collab Signed Peer Event v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "task_id", "seq", "type", "actor_id", "occurred_at", "idempotency_key", "team_hash", "signature"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "event_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "pattern": "^T-[A-Z0-9-]{1,62}$" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "type": { "enum": ["created", "desktop_claimed", "claimed", "renewed", "progress", "checkpoint", "handoff", "review_requested", "run_failed", "blocked", "reopened", "reviewed", "completed", "cancelled"] },
+    "actor_id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+    "occurred_at": { "type": "string", "format": "date-time", "pattern": "Z$" },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "team_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "signature": { "type": "string", "minLength": 1 },
+    "spec_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "epoch": { "type": "integer", "minimum": 1 },
+    "lease_id": { "type": "string", "minLength": 1 },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "summary": { "type": "string", "maxLength": 4000 },
+    "next_stage": { "type": "integer", "minimum": 1 },
+    "decision": { "enum": ["approved", "changes_requested"] },
+    "refs": {
+      "type": "object", "additionalProperties": false, "required": ["branch", "commit", "tests"],
+      "properties": {
+        "branch": { "type": "string", "pattern": "^codex/[A-Za-z0-9][A-Za-z0-9._/-]{0,150}$" },
+        "commit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}([a-fA-F0-9]{24})?$" },
+        "tests": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S" }
+      }
+    }
+  },
+  "allOf": [
+    { "if": { "properties": { "type": { "const": "created" } }, "required": ["type"] }, "then": { "required": ["spec_hash"] } },
+    { "if": { "properties": { "type": { "enum": ["claimed", "renewed"] } }, "required": ["type"] }, "then": { "required": ["epoch", "lease_id", "expires_at"] } },
+    { "if": { "properties": { "type": { "enum": ["checkpoint", "handoff", "review_requested", "completed"] } }, "required": ["type"] }, "then": { "required": ["refs"] } },
+    { "if": { "properties": { "type": { "const": "handoff" } }, "required": ["type"] }, "then": { "required": ["summary", "next_stage"], "properties": { "summary": { "minLength": 1, "pattern": "\\S" } } } },
+    { "if": { "properties": { "type": { "const": "reviewed" } }, "required": ["type"] }, "then": { "required": ["decision"] } },
+    { "if": { "properties": { "type": { "const": "reopened" } }, "required": ["type"] }, "then": { "required": ["summary"], "properties": { "summary": { "minLength": 1, "pattern": "\\S" } } } }
+  ],
+  "$comment": "Runtime additionally verifies Ed25519 signatures, pinned team hash, event sequence, role/route/capacity, exact shared branch-tip SHA and state transitions. Manual desktop reservations have no lease and require manual continuation or cancellation. desktop_poll tasks use the claimed/renewed lease events and existing fencing; bound conversation IDs stay private, never in event fields or idempotency keys."
+}

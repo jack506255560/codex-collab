@@ -1,0 +1,159 @@
+# 企业微信任务 → 指定 Codex 桌面对话轮询执行
+
+本模式是 `desktop_poll`，不是后台 SDK 自动模式，也不是旧的手动 `desktop` 保留。企业微信适配器负责入口/通知，Git 保存协议，**指定已有 Codex 对话的 heartbeat**负责调用 MCP 接单并在该对话执行。
+
+```text
+真人 @Alice Bot
+  → Alice 本机适配器校验群/真人权限
+  → Git agent-collab 写 desktop_poll 任务（open，未开始执行）
+  → Alice 已有对话 heartbeat → MCP 原子认领、准备隔离工作树
+  → 本对话修改/测试/明确提交 → finish_desktop_task
+  → 固定测试 + 租约/祖先校验 + push → handoff
+  → Alice Bot 通知结果和下一阶段
+  → Bob 已有对话 heartbeat → 从准确 checkpoint SHA 接力
+  → review_requested → Bob Bot 通知 → 真人审核/完成
+```
+
+通知不构成调度：机器人不必接收其他机器人的消息。下一位从 Git 发现工作，群里告知“优先 Bob”是人的可见提示，不是假冒成功 @ 或实时唤醒。
+
+## 一次性配置
+
+电脑、Codex 桌面应用和本机企微适配器需要保持可用。运行时不需要远程 HTTP 中心服务，但本机适配器仍要常驻。是否接受一分钟 heartbeat、是否运行和调用本项目 MCP，要以目标对话的真实工具结果验证；MCP 本身不唤醒对话。不能以 standalone cron、新 SDK 对话或后台日志代替已有对话的验收。
+
+### 1. 新建隔离环境，不改已有签名账本
+
+同一个 Bot 不得同时连接旧服务/发现脚本/新适配器。先确认旧配置没有正在执行的任务；停止旧连接，再启动新连接。初始化本身不连接机器人，可以提前完成。
+
+```sh
+cd "$HOME/codex-collab"
+root="$HOME/.codex-collab-desktop-poll-test"
+node scripts/peer/setup-local.mjs --demo "$HOME/codex-collab-demo" \
+  --out "$root" --mode desktop-poll \
+  --wecom-from "$HOME/.codex-collab-auto-test"
+```
+
+`node` 需要 20+。可用自己的 Node 或 Codex bundled runtime，不修改 CC Switch。`--wecom-from` 安全复用本机两台不同 Bot 的配置/真人 owner，不打印 Secret、不复制签名私钥和旧任务；若没有旧配置，省略该参数并按 `docs/peer.md` 配置两个机器人。不要把 Secret 发到对话或提交 Git。
+
+默认 frontend: Alice → Bob 候补；backend: Bob → Alice 候补。首选认领宽限 3 分钟（给一分钟轮询留余量），执行 lease 15 分钟；执行中建议至少每 5 分钟续租并限制单个长操作时长。修改策略必须在建立新账本之前完成，不能原地改签名任务的 team.json。
+
+每份私有配置的关键项为：
+
+```json
+{
+  "execution_mode": "desktop_poll",
+  "auto_execute": false,
+  "test_argv": ["sh", "test.sh"]
+}
+```
+
+完整配置还包含身份、私钥、仓库、数据目录、团队策略和企微凭据。校验器拒绝 `desktop_poll` + `auto_execute=true`。SDK Runner 的默认接单入口也拒绝该模式，防止后台抢单。
+
+### 2. 接到两个已存在的桌面项目
+
+项目应是干净的 demo clone，main 必须与本次隔离 remote 的 main 相同。脚本会保留无关 TOML/provider 设置，备份原 MCP/remote/exclude，只更新该成员项目级 MCP 和安装专用 skill，并把 origin 接到本次隔离 remote。**这会切换项目 origin**，是有意的本机测试配置；不推 GitHub、不改全局 Codex 配置、不覆盖代码和未提交改动。
+
+```sh
+node scripts/peer/setup-desktop-project.mjs "$root/alice-peer.json" /absolute/alice-repo
+node scripts/peer/setup-desktop-project.mjs "$root/bob-peer.json" /absolute/bob-repo
+```
+
+返回 `*-desktop-peer.json`、`*-project-backup.json`、`*-bind-prompt.txt`。备份是 0600 本机文件，可能包含原项目配置，不能上传。脚本拒绝覆盖现有安装，重配置前先检查备份，不能盲目重复初始化。
+
+重新加载目标项目 MCP；若已有进程仍使用旧配置，需要关闭旧连接并重新打开/重启桌面应用。`get_identity` 应分别返回 alice/bob 和 `execution_mode=desktop_poll`。
+
+### 3. 在每个目标已有对话里绑定和创建 heartbeat
+
+分别复制本机生成的 Alice/Bob 绑定提示词，发送到**各自实际对话**，不是工具开发对话：
+
+```sh
+cat "$root/alice-bind-prompt.txt"
+cat "$root/bob-bind-prompt.txt"
+```
+
+提示词要求目标对话：确认 MCP 身份 → 获取当前真实 thread ID → `bind_desktop_thread` → 用应用 automation 工具在**这个已有对话**设置周期 heartbeat → 立即只读/无任务检查。不能仅凭项目目录猜对话 ID；若应用上下文/当前 shell 未暴露 ID，让用户提供目标对话 ID/链接，不读取或修改应用私有数据库。
+
+每个 heartbeat 保存的提示词须含该身份、真实 thread_id、skill 路径；每次 `get_identity`、`poll_desktop_task`。无任务保持安静，有任务在本对话完成当前阶段并交接。创建前查已有 automation，避免重复。默认尝试一分钟周期，只有工具接受且真实触发后才算启用；否则说明限制。应用工具不可用时只完成绑定，不能声称已自动轮询。
+
+绑定和 app heartbeat 是两件事：MCP 返回 `automation_created=false`；只能由应用工具完成定时设置。桌面绑定 ID/执行路径/token 只存本机 `desktop-state.json`，不进 Git。
+
+### 4. 切换 Bot 连接并启动通知适配器
+
+```sh
+node scripts/peer/cli.mjs stop "$HOME/.codex-collab-auto-test/alice-peer.json"
+node scripts/peer/cli.mjs stop "$HOME/.codex-collab-auto-test/bob-peer.json"
+node scripts/peer/cli.mjs start "$root/alice-peer.json"
+node scripts/peer/cli.mjs start "$root/bob-peer.json"
+```
+
+日志应显示 `notifications only; automatic code execution disabled` 和两次各自的 `Peer WeCom authenticated`。Alice 接本人的群命令；Bob 在单真人模拟中只发送自己的通知。真实多用户需独立 owner 身份，不能复制同一真人 userid 绕过权限。
+
+可用 CLI 检查“进程在线”和“企微已鉴权”是否是两个独立状态：
+
+```sh
+node scripts/peer/cli.mjs status "$root/alice-peer.json"
+node scripts/peer/cli.mjs status "$root/bob-peer.json"
+```
+
+必须同时看到 `"online": true` 和 `"wecom": "authenticated"`。只有 `online: true` 不能证明企微仍在线；适配器会把状态写入私有的 `wecom-health.json`，不进入 Git 账本。
+
+## 验证完整闭环
+
+所有绑定/heartbeat 就绪后，在群里选择真实 Alice @，发**新任务**：
+
+```text
+@Alice 协作 创建 [frontend>backend] Alice阶段仅为greet.sh增加--upper并保留默认和姓名参数，Bob阶段仅扩展test.sh覆盖四种新旧行为 | sh greet.sh输出hello, world;sh greet.sh Alice输出hello, Alice;sh greet.sh --upper输出HELLO, WORLD;sh greet.sh --upper Alice输出HELLO, ALICE;sh test.sh通过并覆盖四种行为
+```
+
+注意工作流语法有方括号 `[frontend>backend]`。省略时只有默认阶段，不会凭任务标题自动增加 Bob 阶段。
+
+验收要看到同一个新任务 ID：
+
+1. 群回复“等待绑定的 Codex 桌面对话轮询认领”，不是“后台 SDK 已开始”。
+2. 指定 Alice 对话出现任务 ID、当前阶段和实际修改/测试记录；Alice Bot 发 claimed。
+3. Alice `finish_desktop_task` 固定验证通过并 push；群里给出结果、SHA、测试与下一阶段优先 Bob。
+4. 指定 Bob 对话从 Alice 的准确 SHA 执行；Bob Bot 发 claimed、review_requested。
+5. 四种行为通过，最终 checkpoint 包含两阶段代码；main 未自动改变，等待真人审核。
+
+仅测试通过、后台日志出现 claimed、或群里有回复，都不能代替“实际指定已有桌面对话自动执行”的验收。应用是否自动切到该对话不是验收条件，打开该对话应看到执行记录。
+
+审核仍由真人群命令完成：
+
+```text
+@Alice 协作 审核 T-真实任务ID 通过
+@Alice 协作 完成 T-真实任务ID
+```
+
+## MCP 与运行约束
+
+| 工具 | 作用 |
+| --- | --- |
+| get_identity | 核对身份与模式 |
+| bind_desktop_thread / desktop_status | 本机绑定与检查；不创建 app automation |
+| poll_desktop_task | 原子认领/恢复一项任务，返回隔离工作树或 job=null |
+| renew_desktop_task | 活跃执行时显式续租 |
+| finish_desktop_task | 验证已提交代码、跑固定测试、push、发布下一阶段或待审核 |
+| fail_desktop_task | 简洁脱敏失败；候补接力；保留工作树 |
+| unbind_desktop_thread | 没有有效执行租约时解除绑定；仍须另外停 heartbeat |
+
+- 工作树在项目内的 `.codex-collab-worktrees/`（本地 Git ignore），各阶段独立 `codex/desktop-*` 分支。当前项目工作区不切分支，手头改动不被覆盖。
+- 认领/续租/发布沿用签名事件和 Git fast-forward CAS；finish 核对 lease_id/epoch。迟到执行者不能发布；推送代码还须包含前一 checkpoint 的祖先。
+- 编辑阶段没有无限续租定时器。定时 app heartbeat 只是唤起检查；必须由活跃对话显式调用续租。只有有超时的前台固定测试/发布调用会在调用期间续租。Bot 在线不是对话活着的证据。
+- 首选不接单，3 分钟后候补可接；执行掉线，15 分钟 lease 过期加 clock skew 后可接管。旧进程/对话应停止，不改写已交接内容。没有签名成功 checkpoint 的未提交进度不会自动恢复给另一台机器。
+- 本机绑定使用调用参数 thread_id 与私有绑定比对，是工具路由与防误操作措施，**不是由 Codex 宿主认证的调用者身份**。同一台机器上能访问同一私钥/配置的其他对话不构成安全隔离边界；真正成员授权靠独立签名私钥和团队策略。
+- MCP 不发完整对话，不自动审核，不 merge main；群通知失败不回滚 Git 事件，适配器按成功回执持久化游标重试。
+
+## 停止、状态和重新绑定
+
+```sh
+node scripts/peer/cli.mjs desktop-status "$root/alice-desktop-peer.json"
+node scripts/peer/cli.mjs desktop-status "$root/bob-desktop-peer.json"
+node scripts/peer/cli.mjs read "$root/alice-peer.json" T-真实任务ID
+node scripts/peer/cli.mjs stop "$root/alice-peer.json"
+node scripts/peer/cli.mjs stop "$root/bob-peer.json"
+```
+
+停止适配器不等于停止 app heartbeat，后者仍可访问 Git：要暂停协作，应在两个目标对话分别暂停 heartbeat；若有正在编辑的任务，还需停止/报告失败或等待租约失效。重新绑定前先停旧 heartbeat、确认没有有效租约，再显式 `desktop-unbind /abs/peer.json 旧真实thread_id`；不要手改私有 job token 或已签名事件。
+
+## 验证范围
+
+2026-10-10 本轮全套 58 项自动测试通过，其中新增 7 项桌面对话轮询测试。本项目自动测试覆盖模拟群命令、真实 stdio MCP、真实 Git/worktree/固定测试、绑定防误用、双对话身份接力、精确 SHA、无闲置续租、过期候补及迟到发布拒绝；模型修改由测试夹具模拟，不冒充真实 Codex 桌面会话。桌面 app heartbeat + 实际 Alice/Bob 对话 + 真实群的新任务闭环必须另外验收；跨两台机器尚未验证。

@@ -56,7 +56,7 @@ test('Feishu mock -> Git ledger -> authenticated HTTP -> runner-owned Codex mock
     } }) });
     const runner = new Runner({ repo, dataDir: join(root, 'runner'), api, token: 'bob-token-123456789012345678901234', userId: 'bob', agentFactory });
     // reviewer was not set at creation; register a new task with explicit reviewer to check full flow.
-    const second = (await req('/api/tasks', 'POST', { title: 'Second task', acceptance: ['pass test'], reviewer: 'alice' }, 'second'))[1];
+    const second = await service.create(accounts.users[0], { title: 'Second task', acceptance: ['pass test'], reviewer: 'alice', chatId: 'allowed', channel: 'feishu' }, 'second');
     await req(`/api/tasks/${second.spec.id}/assign`, 'POST', { assignee: 'bob' });
     // First task is intentionally not reviewable; failure is recorded and next run takes the second task.
     await assert.rejects(runner.once(), /task has no reviewer/);
@@ -78,6 +78,58 @@ test('Feishu mock -> Git ledger -> authenticated HTTP -> runner-owned Codex mock
     assert.equal((await store.read(second.spec.id)).state.status, 'completed');
     assert.match(replies.at(-1), /已完成/);
     assert.equal(git(repo, 'branch', '--show-current'), 'main');
+  } finally {
+    if (server) await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runner commits tested tracked edits when Codex cannot write Git metadata, but rejects new files', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'collab-runner-fallback-'));
+  let server;
+  try {
+    const repo = join(root, 'repo');
+    execFileSync('git', ['init', '-b', 'main', repo]);
+    git(repo, 'config', 'user.name', 'Test User'); git(repo, 'config', 'user.email', 'test@example.invalid');
+    await writeFile(join(repo, 'greet.sh'), '#!/bin/sh\nprintf "hello, world\\n"\n');
+    await writeFile(join(repo, 'test.sh'), '#!/bin/sh\nset -eu\n[ "$(sh greet.sh)" = "hello, world" ]\n');
+    git(repo, 'add', '.'); git(repo, 'commit', '-m', 'fixture');
+    git(repo, 'branch', 'agent-collab');
+    const store = await new GitTaskStore({ repo, dataDir: join(root, 'server') }).init();
+    const users = [{ id: 'alice', role: 'admin', token_sha256: hashToken(token) },
+      { id: 'bob', role: 'member', token_sha256: hashToken('bob-token-123456789012345678901234') }];
+    const service = new CollaborationService(store, { repoId: 'fixture', defaultReviewer: 'alice', users });
+    server = await startHttp({ service, accounts: new Accounts(users), port: 0 });
+    const api = `http://127.0.0.1:${server.address().port}`;
+    const makeTask = async (key) => {
+      const task = await service.create(users[0], { title: 'Update greeting', acceptance: ['sh test.sh passes'] }, key);
+      await service.assign(users[0], task.spec.id, 'bob');
+      return task.spec.id;
+    };
+    const id = await makeTask('tracked-task');
+    const runner = new Runner({ repo, dataDir: join(root, 'runner'), api, token: 'bob-token-123456789012345678901234', userId: 'bob',
+      agentFactory: () => ({ startThread: ({ workingDirectory }) => ({ run: async () => {
+        await writeFile(join(workingDirectory, 'greet.sh'), '#!/bin/sh\nprintf "HELLO, WORLD\\n"\n');
+        await writeFile(join(workingDirectory, 'test.sh'), '#!/bin/sh\nset -eu\n[ "$(sh greet.sh)" = "HELLO, WORLD" ]\n');
+        return { finalResponse: 'Edited tracked files without a commit.' };
+      } }) }) });
+    const reviewed = await runner.once();
+    assert.equal(reviewed.spec.id, id);
+    assert.equal(reviewed.state.status, 'review');
+    const refs = reviewed.events.at(-1).refs;
+    assert.notEqual(refs.commit, git(repo, 'rev-parse', 'main'));
+    assert.match(git(repo, 'show', `${refs.branch}:greet.sh`), /HELLO, WORLD/);
+    assert.match(git(repo, 'show', 'main:greet.sh'), /hello, world/);
+
+    const unsafeId = await makeTask('untracked-task');
+    const unsafeRunner = new Runner({ repo, dataDir: join(root, 'unsafe-runner'), api, token: 'bob-token-123456789012345678901234', userId: 'bob',
+      agentFactory: () => ({ startThread: ({ workingDirectory }) => ({ run: async () => {
+        await writeFile(join(workingDirectory, 'untracked-secret.txt'), 'must never be committed');
+        return { finalResponse: 'New file left untracked.' };
+      } }) }) });
+    await assert.rejects(unsafeRunner.once(), /untracked or newly staged files/);
+    assert.equal((await service.read(unsafeId)).state.status, 'blocked');
+    assert.equal(git(repo, 'ls-tree', '-r', '--name-only', 'main').includes('untracked-secret.txt'), false);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     await rm(root, { recursive: true, force: true });

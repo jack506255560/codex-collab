@@ -1,16 +1,44 @@
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { BadRequest, Forbidden } from './auth.mjs';
 
 const taskId = () => `T-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
 const key = () => randomUUID();
+const exec = promisify(execFile);
+const commitPattern = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i;
+
+// Never resolve a user-provided remote or shell command. The server verifies a pinned
+// commit against its own configured repository/remote before advertising a handoff.
+async function verifyHandoffRef(store, refs) {
+  if (!store.repo) throw new BadRequest('handoff repository is not configured');
+  const branch = refs?.branch;
+  if (typeof branch !== 'string' || !/^codex\/[A-Za-z0-9][A-Za-z0-9._/-]{0,150}$/.test(branch) ||
+      branch.includes('..') || branch.endsWith('/') || branch.endsWith('.lock') || !commitPattern.test(refs?.commit ?? '')) {
+    throw new BadRequest('handoff requires a safe codex/* branch and full commit SHA');
+  }
+  const git = async (...args) => (await exec('git', ['-C', store.repo, ...args], {
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, timeout: 30_000
+  })).stdout.trim();
+  try {
+    await git('check-ref-format', 'refs/heads/' + branch);
+    if (store.push) await git('fetch', '--no-tags', 'origin', 'refs/heads/' + branch);
+    const tip = await git('rev-parse', '--verify', (store.push ? 'FETCH_HEAD' : 'refs/heads/' + branch) + '^{commit}');
+    if (tip !== refs.commit.toLowerCase()) throw new BadRequest('handoff commit must be the shared branch tip');
+  } catch (error) {
+    if (error instanceof BadRequest) throw error;
+    throw new BadRequest('handoff branch/commit is not available on the shared Git repository');
+  }
+}
 
 export class CollaborationService {
-  constructor(store, { repoId, defaultReviewer, users, notify = async () => {} }) {
+  constructor(store, { repoId, defaultReviewer, users, notify = async () => {}, verifyHandoff = (refs) => verifyHandoffRef(store, refs) }) {
     this.store = store;
     this.repoId = repoId;
     this.defaultReviewer = defaultReviewer;
     this.userIds = users ? new Set(users.map((user) => user.id)) : null;
     this.notify = notify;
+    this.verifyHandoff = verifyHandoff;
   }
 
   async list() { return this.store.list(); }
@@ -23,7 +51,7 @@ export class CollaborationService {
       schema_version: 1, id: input.id || taskId(), repo: this.repoId,
       title: input.title, description: input.description || '',
       base_branch: 'main', acceptance: input.acceptance,
-      source: { ...(input.chatId ? { chat_id: input.chatId } : {}),
+      source: { ...(input.chatId ? { chat_id: input.chatId, channel: input.channel || 'feishu' } : {}),
         ...((input.reviewer || this.defaultReviewer) ? { reviewer: input.reviewer || this.defaultReviewer } : {}) }
     };
     const task = await this.store.create(spec, user.id, idempotencyKey);
@@ -31,12 +59,12 @@ export class CollaborationService {
     return task;
   }
 
-  async assign(user, id, assignee, idempotencyKey = key(), chatId) {
+  async assign(user, id, assignee, idempotencyKey = key(), chatId, channel) {
     if (user.role !== 'admin') throw new Forbidden('only an admin may assign tasks');
     if (!assignee || (this.userIds && !this.userIds.has(assignee))) throw new BadRequest('unknown assignee');
     const current = await this.read(id);
     if (current.spec.source?.reviewer === assignee) throw new BadRequest('assignee and reviewer must be different');
-    const task = await this.store.append(id, { type: 'assigned', assignee, ...(chatId ? { chat_id: chatId } : {}) }, user.id, idempotencyKey, current.state.seq);
+    const task = await this.store.append(id, { type: 'assigned', assignee, ...(chatId ? { chat_id: chatId, channel: channel || 'feishu' } : {}) }, user.id, idempotencyKey, current.state.seq);
     await this.notify(task, 'assigned');
     return task;
   }
@@ -46,8 +74,18 @@ export class CollaborationService {
     if (!['progress', 'blocked', 'handoff', 'review_requested', 'reviewed', 'review_note', 'run_failed', 'completed', 'cancelled'].includes(payload.type)) throw new BadRequest('unsupported report event');
     if (payload.type === 'completed' || payload.type === 'cancelled') {
       if (user.role !== 'admin') throw new Forbidden('admin approval is required');
-    } else if (task.state.assignee !== user.id && user.role !== 'admin') {
+    } else if (payload.type === 'handoff' ?
+      (task.state.status === 'open' ? task.events[0]?.actor_id !== user.id : task.state.assignee !== user.id) :
+      task.state.assignee !== user.id && user.role !== 'admin') {
       throw new Forbidden('task is assigned to another agent');
+    }
+    if (payload.type === 'handoff') {
+      if (!['open', 'assigned', 'running'].includes(task.state.status)) throw new BadRequest('only active code work can be handed off');
+      if (typeof payload.summary !== 'string' || !payload.summary.trim() || payload.summary.length > 4000 ||
+          typeof payload.refs?.tests !== 'string' || !payload.refs.tests.trim() || payload.refs.tests.length > 1000) {
+        throw new BadRequest('handoff requires a concise summary and test evidence');
+      }
+      await this.verifyHandoff(payload.refs);
     }
     if (payload.type === 'completed') {
       const evidence = task.events.findLast((event) => event.type === 'review_requested')?.refs;

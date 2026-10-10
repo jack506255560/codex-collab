@@ -1,0 +1,10 @@
+import { join, resolve } from 'node:path';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
+import { makePeerMcp } from './mcp.mjs';
+import { loadRuntime, readPeerConfig } from './runtime.mjs';
+const path = process.argv[2] || process.env.COLLAB_PEER_CONFIG;
+if (!path) throw new Error('usage: node apps/peer/mcp-main.mjs /absolute/path/to/private-peer.json');
+const { config } = await readPeerConfig(resolve(path));
+const runtime = await loadRuntime(resolve(path), { dataDir: join(config.data_dir, 'mcp', String(process.pid)) });
+const service = runtime.service;
+serveStdio(() => makePeerMcp(service, { config }), { onerror: (error) => console.error('peer MCP error:', error.message) });

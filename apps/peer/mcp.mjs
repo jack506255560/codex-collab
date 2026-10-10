@@ -1,0 +1,32 @@
+import { McpServer } from '@modelcontextprotocol/server';
+import * as z from 'zod/v4';
+import { DesktopExecutor } from './desktop.mjs';
+const required = z.string().min(1);
+export function makePeerMcp(service, { config } = {}) {
+  const server = new McpServer({ name: 'codex-collab-peer', version: '0.3.0' });
+  const tool = (name, description, schema, fn) => server.registerTool(name, { description, inputSchema: schema }, async (input) => {
+    try { return { content: [{ type: 'text', text: JSON.stringify(await fn(input)) }] }; }
+    catch (error) { return { isError: true, content: [{ type: 'text', text: error.status ? error.message : 'Peer operation failed; inspect local configuration and Git access.' }] }; }
+  });
+  tool('get_identity', 'Check this MCP identity before creating, claiming or editing a task. Does not return keys or local paths.', z.object({}), () => ({ agent_id: service.agentId, repo: service.team.repo, role: service.team.agents[service.agentId].role, capabilities: service.team.agents[service.agentId].capabilities, execution_mode: config?.execution_mode || 'legacy' }));
+  tool('list_tasks', 'Read signed shared tasks directly from Git; no central HTTP service', z.object({}), () => service.list());
+  tool('read_task', 'Read the task, exact handoff commit, lease and workflow stage', z.object({ task_id: required }), ({ task_id }) => service.read(task_id));
+  tool('claim_desktop_task', 'Manually reserve the next stage of a waiting desktop-created task for this desktop identity. No automatic wakeup or lease expiry; requires latest seq and configured route eligibility. Other Runners cannot execute it once reserved.', z.object({ task_id: required, expected_seq: z.number().int().min(1), idempotency_key: required.optional() }), ({ task_id, expected_seq, idempotency_key }) => service.claimDesktop(task_id, expected_seq, idempotency_key));
+  tool('create_task', 'Create a signed task. By default the current desktop Codex owns workflow[0]; include a second configured role for a teammate. Call handoff_task after pushing code. Use execution_mode=automatic for Runner dispatch, or desktop_poll for the bound existing conversation heartbeat.', z.object({ title: required.max(200), description: z.string().max(4000).default(''), acceptance: z.array(required.max(1000)).min(1).max(32), workflow: z.array(required).min(1).max(16).optional(), execution_mode: z.enum(['desktop', 'automatic', 'desktop_poll']).default('desktop'), chat_id: required.optional(), idempotency_key: required.optional() }), ({ idempotency_key, chat_id, ...input }) => service.create({ ...input, chatId: chat_id }, idempotency_key));
+  tool('handoff_task', 'Publish a pushed code commit and next-step summary for the next workflow role. Requires the next configured stage; never publishes private conversations.', z.object({ task_id: required, expected_seq: z.number().int().min(1), summary: required.max(4000), branch: required, commit: required, tests: required.max(1000), idempotency_key: required.optional() }), ({ task_id, expected_seq, idempotency_key, summary, branch, commit, tests }) => service.handoff(task_id, { summary, refs: { branch, commit, tests } }, expected_seq, idempotency_key));
+  tool('request_review', 'Publish the final stage code and test evidence for explicit human review; this does not approve or complete the task.', z.object({ task_id: required, expected_seq: z.number().int().min(1), summary: required.max(4000), branch: required, commit: required, tests: required.max(1000), idempotency_key: required.optional() }), ({ task_id, expected_seq, idempotency_key, summary, branch, commit, tests }) => service.requestReview(task_id, { summary, refs: { branch, commit, tests } }, expected_seq, idempotency_key));
+  if (config) {
+    const desktop = new DesktopExecutor(service, config);
+    const thread = required.max(128).describe('Actual bound Codex desktop conversation ID. This is explicit client binding, not host-attested caller authentication.');
+    const job = z.object({ thread_id: thread, task_id: required });
+    tool('bind_desktop_thread', 'Bind this agent to the actual current desktop conversation. Call once in the intended Alice/Bob thread, then separately create a heartbeat in THAT thread. Does not create an automation or launch a model.', z.object({ thread_id: thread }), ({ thread_id }) => desktop.bind(thread_id));
+    tool('desktop_status', 'Read private local desktop binding and job metadata, not credentials. Binding/thread IDs are never written to the Git task ledger.', z.object({}), () => desktop.status());
+    tool('unbind_desktop_thread', 'Explicitly remove the local binding only when no live job is held. Pause/delete the app heartbeat separately.', z.object({ thread_id: thread }), ({ thread_id }) => desktop.unbind(thread_id));
+    tool('poll_desktop_task', 'Called by the bound desktop thread heartbeat: atomically claim or resume one desktop_poll task and prepare its isolated worktree. Returns job=null if nothing is actionable. Execute the stage IN THIS conversation; no SDK session is launched.', z.object({ thread_id: thread }), ({ thread_id }) => desktop.poll(thread_id));
+    tool('renew_desktop_task', 'Renew a live task only while this bound conversation is actively working. Call before/after long editing or command operations. Bot uptime does not renew the lease.', job, ({ thread_id, task_id }) => desktop.renew(thread_id, task_id));
+    tool('finish_desktop_task', 'After explicitly committing code in the assigned worktree, run the trusted fixed test command, verify lease and ancestry, push, and publish handoff or final review. Does not approve, merge main, send arbitrary commands, or start the next conversation. Bounded foreground tests renew their lease.', job.extend({ summary: required.max(4000) }), ({ thread_id, task_id, summary }) => desktop.finish(thread_id, task_id, summary));
+    tool('fail_desktop_task', 'Report a concise sanitized stage failure; release the lease for configured fallback. Preserves the worktree. Never include private prose, secrets or raw errors.', job.extend({ summary: required.max(4000) }), ({ thread_id, task_id, summary }) => desktop.fail(thread_id, task_id, summary));
+  }
+  // Human approval is deliberately not an agent tool: owner group commands / CLI only.
+  return server;
+}

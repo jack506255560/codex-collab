@@ -5,6 +5,23 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "event_id", "task_id", "seq", "type", "actor_id", "occurred_at", "idempotency_key"],
+  "allOf": [{
+    "if": { "properties": { "type": { "const": "handoff" } }, "required": ["type"] },
+    "then": {
+      "required": ["summary", "refs"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "refs": {
+          "type": "object", "required": ["branch", "commit", "tests"],
+          "properties": {
+            "branch": { "type": "string", "pattern": "^codex/[A-Za-z0-9][A-Za-z0-9._/-]{0,150}$" },
+            "commit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}([a-fA-F0-9]{24})?$" },
+            "tests": { "type": "string", "minLength": 1, "maxLength": 1000 }
+          }
+        }
+      }
+    }
+  }],
   "properties": {
     "schema_version": { "const": 1 },
     "event_id": { "type": "string", "minLength": 1 },
@@ -17,6 +34,7 @@
     "summary": { "type": "string", "maxLength": 4000 },
     "assignee": { "type": "string", "minLength": 1 },
     "chat_id": { "type": "string", "minLength": 1 },
+    "channel": { "enum": ["feishu", "wecom"] },
     "run_id": { "type": "string", "minLength": 1 },
     "decision": { "enum": ["approved", "changes_requested"] },
     "refs": {

@@ -7,15 +7,25 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test packages/protocol/test/*.test.mjs packages/git-store/test/*.test.mjs apps/server/test/*.test.mjs tests/e2e/*.test.mjs",
+    "test": "node --test packages/protocol/test/*.test.mjs packages/git-store/test/*.test.mjs packages/peer/test/*.test.mjs apps/server/test/*.test.mjs apps/peer/test/*.test.mjs tests/e2e/*.test.mjs",
     "server": "node apps/server/main.mjs",
-    "runner": "node apps/runner/main.mjs"
+    "runner": "node apps/runner/main.mjs",
+    "peer:mcp": "node apps/peer/mcp-main.mjs",
+    "peer:runner": "node apps/peer/main.mjs",
+    "peer:create-team": "node scripts/peer/create-team.mjs",
+    "peer:init-agent": "node scripts/peer/init-agent.mjs",
+    "peer:create-identity": "node scripts/peer/create-identity.mjs",
+    "peer:configure-wecom": "node scripts/peer/configure-wecom.mjs",
+    "peer:setup-local": "node scripts/peer/setup-local.mjs",
+    "peer:setup-desktop-project": "node scripts/peer/setup-desktop-project.mjs",
+    "peer": "node scripts/peer/cli.mjs"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "1.74.0",
     "@modelcontextprotocol/node": "2.1.1",
     "@modelcontextprotocol/server": "2.3.1",
     "@openai/codex-sdk": "0.161.0",
+    "@wecom/aibot-node-sdk": "1.0.7",
     "zod": "^4.6.5"
   }
 }

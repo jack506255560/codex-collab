@@ -1,7 +1,9 @@
 const transitions = Object.freeze({
   uncreated: { created: 'open' },
-  open: { assigned: 'assigned', cancelled: 'cancelled' },
-  assigned: { run_started: 'running', assigned: 'assigned', cancelled: 'cancelled' },
+  // A task creator can publish code from their already-open desktop worktree.
+  open: { assigned: 'assigned', handoff: 'waiting', cancelled: 'cancelled' },
+  // A desktop Codex may hand off an already committed change without a Runner claim.
+  assigned: { run_started: 'running', assigned: 'assigned', handoff: 'waiting', cancelled: 'cancelled' },
   running: {
     progress: 'running', blocked: 'blocked', run_failed: 'blocked',
     handoff: 'waiting', review_requested: 'review', cancelled: 'cancelled'
@@ -46,6 +48,7 @@ export function reduceTask(spec, events) {
     const transition = transitions[status][event.type];
     if (!transition) throw new Error(`invalid transition ${status} -> ${event.type}`);
     if (event.type === 'assigned' && (!event.assignee || typeof event.assignee !== 'string')) throw new Error('assignment requires an assignee');
+    if (event.type === 'handoff' && (!event.summary || !event.refs?.branch || !event.refs?.commit || !event.refs?.tests)) throw new Error('handoff requires summary, branch, commit and tests');
     if (event.type === 'reviewed' && !['approved', 'changes_requested'].includes(event.decision)) throw new Error('review requires a valid decision');
     if (event.type === 'completed' && (!event.refs || !event.refs.commit || !event.refs.tests)) throw new Error('completion requires commit and test evidence');
     status = typeof transition === 'function' ? transition(event) : transition;

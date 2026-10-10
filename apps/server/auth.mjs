@@ -9,7 +9,7 @@ export class Accounts {
     for (const user of users) {
       if (!user.id || !/^[a-f0-9]{64}$/.test(user.token_sha256 ?? '') || !['admin', 'member'].includes(user.role)) throw new Error('invalid accounts configuration');
     }
-    for (const field of ['id', 'token_sha256', 'feishu_open_id']) {
+    for (const field of ['id', 'token_sha256', 'feishu_open_id', 'wecom_userid']) {
       const values = users.map((user) => user[field]).filter(Boolean);
       if (new Set(values).size !== values.length) throw new Error(`duplicate account ${field}`);
     }
@@ -25,6 +25,10 @@ export class Accounts {
     if (typeof raw !== 'string' || raw.length < 24) return null;
     const digest = Buffer.from(hashToken(raw), 'hex');
     return this.users.find((user) => timingSafeEqual(digest, Buffer.from(user.token_sha256, 'hex'))) ?? null;
+  }
+
+  wecom(userid) {
+    return this.users.find((user) => user.wecom_userid && user.wecom_userid === userid) ?? null;
   }
 
   feishu(openId) {

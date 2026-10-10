@@ -5,6 +5,7 @@ import { parseFeishuCommand, dispatchFeishuMessage } from '../feishu.mjs';
 test('only explicit group commands are recognized', () => {
   assert.equal(parseFeishuCommand('随便说一说'), null);
   assert.deepEqual(parseFeishuCommand('@_user_1 协作 分配 T-001 alice'), { action: 'assign', id: 'T-001', assignee: 'alice' });
+  assert.deepEqual(parseFeishuCommand('@协作机器人 协作 分配 T-001 alice'), { action: 'assign', id: 'T-001', assignee: 'alice' });
   assert.deepEqual(parseFeishuCommand('协作 创建 增加大写 | 测试通过;有提交'), { action: 'create', title: '增加大写', acceptance: ['测试通过', '有提交'] });
   assert.deepEqual(parseFeishuCommand('协作 审核 T-001 退回'), { action: 'review', id: 'T-001', decision: 'changes_requested' });
   assert.deepEqual(parseFeishuCommand('协作 完成 T-001'), { action: 'complete', id: 'T-001' });
