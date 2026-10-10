@@ -6,7 +6,7 @@
 
 已实现 Git 签名账本、MCP、企微/飞书适配、后台 Codex SDK Runner，以及桌面手动交接。2026-10-09 已在真实企业微信群完成后台 SDK Alice → Bob 的准确 SHA 接力，最终测试通过并等待真人审核；这不等于绑定已有桌面对话，跨两台机器仍未验证。
 
-**当前新增：指定已有桌面对话轮询模式 `desktop_poll`**。本机适配器只收群消息/发通知，MCP 提供对话绑定、原子接单、隔离工作树、续租、固定测试和交接；已有对话的 app heartbeat 才是唤起来源。绑定和 heartbeat 需要在实际 Alice/Bob 对话设置，尚不能把代码测试成功称为桌面真实闭环成功。本轮全套自动测试 58 项通过。操作见 [`docs/desktop-poll.md`](docs/desktop-poll.md)。
+**指定已有桌面对话轮询模式 `desktop_poll` 已完成本机真实闭环验证**。据用户于 2026-10-10 确认，真实企业微信群任务已由 Alice 的既有 Codex 对话接单执行，再由 Bob 的既有 Codex 对话接力；本机适配器负责收群消息/发通知，MCP 提供对话绑定、原子接单、隔离工作树、续租、固定测试和交接，已有对话的 app heartbeat 负责轮询。跨两台机器部署仍未验证。本轮全套自动测试 58 项通过。操作见 [`docs/desktop-poll.md`](docs/desktop-poll.md)。
 
 ## 推荐：Peer 模式（不部署中心服务）
 
@@ -89,8 +89,8 @@ node apps/runner/main.mjs
 当前单机测试目录可以这样找（不要打印里面的令牌或环境文件）：
 
 ```sh
-cd /Users/xuym/codex-collab
-export PATH="/Users/xuym/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH"
+cd "$HOME/codex-collab"
+# 确保 Node.js >= 20 已安装并且 node 位于 PATH。
 root="$(cat "$HOME/.codex-collab-local-test/current")"
 # 仅在你的本机交互终端输入；不要把实际值放在命令行参数或聊天中。
 printf 'Bot ID: '; IFS= read -r WECOM_BOT_ID
@@ -114,7 +114,7 @@ export COLLAB_ACCOUNTS_FILE="$root/accounts.wecom.json"
 # 仅停原中心服务，保持两个 Runner；先确认旧 PID 确实是本工具的服务。
 old="$(cat "$root/server.pid")"
 ps -p "$old" -o command=
-# 确认包含 /Users/xuym/codex-collab/apps/server/main.mjs 后手动执行：kill "$old"
+# 仅在确认该进程属于当前仓库的 apps/server/main.mjs 后，才手动执行：kill "$old"
 node apps/server/main.mjs
 ```
 
