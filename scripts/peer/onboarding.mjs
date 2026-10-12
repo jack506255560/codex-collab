@@ -44,7 +44,7 @@ export async function readPublicKeyFile(path) {
   return key.export({ type: 'spki', format: 'pem' });
 }
 
-async function getOrCreateIdentityFiles(agentId, directory) {
+export async function getOrCreateIdentityFiles(agentId, directory) {
   if (!idPattern.test(agentId || '') || !isAbsolute(directory)) throw new Error('provide a valid agent ID and absolute identity directory');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const privatePath = join(directory, `${agentId}.private.json`);

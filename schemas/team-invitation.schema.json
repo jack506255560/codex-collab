@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codex-collab:team-invitation:v1",
+  "title": "Codex Collab Signed Member Invitation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "invite_id",
+    "agent_id",
+    "capabilities",
+    "bot_id",
+    "chat_ids",
+    "commands_enabled",
+    "prefer",
+    "claim_public_key",
+    "expires_at",
+    "team_hash",
+    "actor_id",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "invite_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+    },
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+      }
+    },
+    "bot_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "chat_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "commands_enabled": {
+      "type": "boolean"
+    },
+    "prefer": {
+      "type": "boolean"
+    },
+    "claim_public_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "team_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "actor_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$comment": "Runtime verifies administrator signature under team_hash, Ed25519 claim key, expiry, and conflicts with existing members or assignments. No bot Secret or private keys are allowed here."
+}

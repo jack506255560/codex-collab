@@ -35,14 +35,14 @@ export class DesktopExecutor {
   }
   async status() {
     this.checkMode();
-    return this.private.locked(async (state) => ({ agent_id: this.service.agentId, binding: state.binding, jobs: Object.values(state.jobs).map((job) => this.jobView(job)), background_sdk_enabled: false }));
+    return this.private.locked(async (state) => ({ agent_id: this.service.agentId, binding: state.binding, jobs: Object.values(state.jobs).map((job) => this.jobView(job)), last_poll_at: state.last_poll_at || null, poll_count: state.poll_count || 0, background_sdk_enabled: false }));
   }
   async unbind(threadId) {
     return this.private.locked(async (state) => {
       this.checkBinding(state, threadId);
       const tasks = await this.service.list();
       if (tasks.some((task) => task.spec.execution_mode === 'desktop_poll' && task.state.status === 'running' && task.state.assignee === this.service.agentId && this.service.store.clock() < Date.parse(task.state.lease.expires_at))) throw new Conflict('cannot unbind while a task lease is active');
-      state.binding = null; await this.private.write(state);
+      state.binding = null; state.last_poll_at = null; state.poll_count = 0; await this.private.write(state);
       return { unbound: true, automation_paused: false, next_action: 'Pause/delete the thread heartbeat separately; this tool cannot control app automations.' };
     });
   }
@@ -86,6 +86,8 @@ export class DesktopExecutor {
     return this.private.locked(async (state) => {
       this.checkBinding(state, threadId);
       const tasks = await this.service.list();
+      state.last_poll_at = new Date().toISOString(); state.poll_count = (state.poll_count || 0) + 1;
+      await this.private.write(state);
       // Resume a still-live lease, including a claim whose acknowledgement/state
       // write was interrupted. App thread binding is private and stays unchanged.
       let task = tasks.find((t) => t.spec.execution_mode === 'desktop_poll' && t.state.status === 'running' && t.state.assignee === this.service.agentId && this.service.store.clock() < Date.parse(t.state.lease.expires_at));
@@ -114,7 +116,7 @@ export class DesktopExecutor {
           throw new Conflict('desktop preparation failed; no source worktree was overwritten');
         }
       }
-      return { agent_id: this.service.agentId, job: this.jobView(job), task, test_argv: this.config.test_argv || ['sh', 'test.sh'], renew_after_ms: Math.floor(this.service.team.policy.lease_ms / 3), instructions: 'Execute only this stage in this conversation and assigned worktree. Renew before long operations. Commit explicitly; finish runs fixed tests, pushes and publishes. Do not start a Codex SDK/CLI worker.' };
+      return { agent_id: this.service.agentId, job: this.jobView(job), task, test_argv: this.config.test_argv || ['sh', 'test.sh'], renew_after_ms: Math.floor((task.team || this.service.team).policy.lease_ms / 3), instructions: 'Execute only this stage in this conversation and assigned worktree. Renew before long operations. Commit explicitly; finish runs fixed tests, pushes and publishes. Do not start a Codex SDK/CLI worker.' };
     });
   }
   async renew(threadId, taskId) {
@@ -154,7 +156,7 @@ export class DesktopExecutor {
       const controller = new AbortController(); let pulse = Promise.resolve(); let renewalFailed = false;
       // Renewal exists only while THIS bounded foreground publication/test call
       // runs. Bot/MCP process uptime cannot keep an abandoned editing turn alive.
-      const timer = setInterval(() => { pulse = pulse.then(async () => { try { await this.service.renew(taskId, job.token); } catch { renewalFailed = true; controller.abort(); } }); }, Math.max(25, Math.floor(this.service.team.policy.lease_ms / 3)));
+      const timer = setInterval(() => { pulse = pulse.then(async () => { try { await this.service.renew(taskId, job.token); } catch { renewalFailed = true; controller.abort(); } }); }, Math.max(25, Math.floor((task.team || this.service.team).policy.lease_ms / 3)));
       try {
         const argv = this.config.test_argv || ['sh', 'test.sh'];
         try {

@@ -38,7 +38,7 @@ export class PeerRunner {
       const threadId = typeof thread?.id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(thread.id) ? thread.id : null;
       await writeFile(sessionPath, JSON.stringify({ task_id: id, agent_id: this.service.agentId, epoch: token.epoch, stage, thread_id: threadId, branch, status, phase, updated_at: new Date().toISOString() }, null, 2) + '\n', { mode: 0o600 });
     };
-    const interval = Math.max(25, Math.floor(this.service.team.policy.lease_ms / 3));
+    const interval = Math.max(25, Math.floor((task.team || this.service.team).policy.lease_ms / 3));
     const heartbeat = async () => { if (controller.signal.aborted) return; try { await this.service.renew(id, token); } catch { controller.abort(new Error('lease renewal failed; stopping stale execution')); } };
     timer = setInterval(() => { pulse = pulse.then(heartbeat); }, interval);
     const ensure = async () => { controller.signal.throwIfAborted(); await this.service.assertLease(id, token); controller.signal.throwIfAborted(); };

@@ -1,5 +1,7 @@
 # Task protocol v1 (draft)
 
+This is the legacy central-service protocol. Peer task v2 is documented in `peer.md` / `desktop-poll.md`, with signed enrollment v1 in `team-registry.md`.
+
 ## Location
 
 For each target repository, store `.agent-collab/tasks/<task-id>/spec.json` and `.agent-collab/tasks/<task-id>/events/<zero-padded-sequence>-<event-id>.json` on the dedicated `agent-collab` branch. Examples: `000001-evt-created.json`. The `main` branch keeps the versioned protocol docs and Skill. Do not merge `agent-collab` into `main`; code changes travel through separate feature branches and PRs.

@@ -21,14 +21,20 @@ export async function dispatchPeerWecom(frame, { service, config, reply }) {
   const body = frame?.body;
   if (body?.chattype !== 'group' || body.msgtype !== 'text' || !config.chat_ids.includes(body.chatid) || !body.msgid) return false;
   const command = parsePeerCommand(body.text?.content); if (!command) return false;
-  // A personal bot accepts mutations only from its pinned human owner. Bots do not impersonate other members.
-  if (body.from?.userid !== service.team.agents[service.agentId].wecom_userid) return false;
+  // Refresh policy before authorization so newly approved admins/owners are visible.
+  if (service.store.registryRoot) await service.list();
+  const sender = body.from?.userid;
+  const owner = !!sender && sender === service.team.agents[service.agentId]?.wecom_userid;
+  const admin = config.allow_admin_commands === true && !!sender && Object.values(service.team.agents).some((agent) => agent.role === 'admin' && agent.wecom_userid === sender);
+  // Admins may dispatch/query via a member bot. Review mutations must be signed by
+  // the human reviewer's own identity, never by impersonating another member.
+  if (!owner && !(admin && ['create', 'status'].includes(command.action))) return false;
   const key = `wecom:${body.chatid}:${body.msgid}`;
   let text;
   try {
     let task;
     if (command.action === 'create') {
-      task = await service.create({ ...command, id: `T-${digest(key).slice(0, 32).toUpperCase()}`, chatId: body.chatid, execution_mode: config.execution_mode === 'desktop_poll' ? 'desktop_poll' : 'automatic' }, key);
+      task = await service.create({ ...command, workflow: command.workflow || (config.default_workflow ? config.default_workflow : undefined), id: `T-${digest(key).slice(0, 32).toUpperCase()}`, chatId: body.chatid, execution_mode: config.execution_mode === 'desktop_poll' ? 'desktop_poll' : 'automatic' }, key);
       text = task.spec.execution_mode === 'desktop_poll'
         ? `任务 ${task.spec.id} 已创建；按 ${task.spec.workflow.join(' → ')} 等待绑定的 Codex 桌面对话轮询认领。`
         : `任务 ${task.spec.id} 已创建；按 ${task.spec.workflow.join(' → ')} 自动认领。`;
@@ -92,7 +98,7 @@ export function startPeerWecom({ service, config, clientFactory = (options) => n
   const send = async (task, type) => {
     const chatId = task.spec.source?.chat_id;
     if (!chatId || !config.chat_ids.includes(chatId) || type === 'progress' || type === 'checkpoint') return;
-    const result = await client.sendMessage(chatId, { msgtype: 'markdown', markdown: { content: formatPeerNotification(task, type, service.agentId, service.team) } });
+    const result = await client.sendMessage(chatId, { msgtype: 'markdown', markdown: { content: formatPeerNotification(task, type, service.agentId, task.team || service.team) } });
     assertReceipt(result);
   };
   // MCP and Runner use independent processes. Relay committed events from either
@@ -128,7 +134,7 @@ export class PeerNotificationRelay {
       for (const event of task.events.slice(start)) {
         if (event.actor_id === this.service.agentId && !['renewed', 'progress', 'checkpoint'].includes(event.type)) {
           const events = task.events.slice(0, event.seq);
-          await this.send({ ...task, events, state: reducePeerTask(task.spec, events, this.service.team) }, event.type);
+          await this.send({ ...task, events, state: reducePeerTask(task.spec, events, task.team || this.service.team) }, event.type);
         }
         this.cursors[task.spec.id] = event.seq;
         const temp = `${this.path}.${process.pid}.tmp`;

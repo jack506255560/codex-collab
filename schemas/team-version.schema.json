@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codex-collab:team-version:v1",
+  "title": "Codex Collab Signed Team Version v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "version",
+    "parent_hash",
+    "team_hash",
+    "team",
+    "actor_id",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "parent_hash": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      ]
+    },
+    "team_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "team": {
+      "$ref": "urn:codex-collab:team-policy:v2"
+    },
+    "actor_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+    },
+    "enrollment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invite_id",
+        "request_id"
+      ],
+      "properties": {
+        "invite_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+        }
+      }
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$comment": "Runtime verifies pinned root hash, contiguous version and parent chain, canonical team_hash, previous-admin signature, immutable existing identities and local anti-rollback checkpoint."
+}

@@ -1,4 +1,6 @@
-# 实现与边界
+# 旧中心服务实现与边界
+
+本文描述源码保留的旧 HTTP 模式。当前推荐架构见 [团队接入](onboarding.md)、[Peer 机制](peer.md) 与 [签名团队登记](team-registry.md)。
 
 单个中心服务处理群消息、MCP 和 Runner HTTP API；它持有 `agent-collab` Git 独立 worktree，串行追加版本化事件。每位同事在自己的设备配置个人 MCP/Skill，选择性启动 Runner 领取由服务按用户分配的工作；Runner 为每个任务在本地创建独立 Git worktree 与 Codex SDK 会话。代码在 `codex/task-*` 分支，任务事件在 `agent-collab` 分支，两者不相互合并。群消息仅为结构化任务指令和状态摘要，**不共享原始私聊记录**。群内显示的是一个 Bot 代表不同账号的消息，不是真实的多个独立聊天机器人。
 

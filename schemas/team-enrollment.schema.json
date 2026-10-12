@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codex-collab:team-enrollment:v1",
+  "title": "Codex Collab Dual-Signed Enrollment Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "invite_id",
+    "agent_id",
+    "public_key",
+    "wecom_userid",
+    "chat_id",
+    "signature",
+    "invitation_signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+    },
+    "invite_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+    },
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+    },
+    "public_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wecom_userid": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "chat_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1
+    },
+    "invitation_signature": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$comment": "Runtime checks both member and invitation claim signatures, invite identity, allowed chat, expiry and userid semantics. Admin approval consumes invite_id once in a team version."
+}

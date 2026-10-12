@@ -12,13 +12,14 @@ function usage() {
   console.log(`Codex Collab
 
 Usage:
-  codex-collab setup [--role admin|member]
+  codex-collab setup [--no-open]
+  codex-collab setup --terminal [--role admin|member]
   codex-collab
   codex-collab identity create <agent-id> [--dir /absolute/private/directory]
   codex-collab wecom discover
   codex-collab <doctor|start|stop|status|list|read|review|complete|reopen|...> /abs/private-peer.json [args]
 
-Run setup in an interactive terminal. Never pass a bot Secret as a command argument.`);
+setup opens the local web wizard. --terminal keeps the legacy terminal workflow. Never pass a bot Secret as a command argument.`);
 }
 
 async function discoverWeCom() {
@@ -75,13 +76,15 @@ async function main() {
 
   if (args[0] === 'setup' || args.length === 0) {
     const options = args[0] === 'setup' ? args.slice(1) : [];
-    let role;
+    let role, terminal = false, open = true;
     for (let i = 0; i < options.length; i++) {
-      if (options[i] === '--role' && ['admin', 'member'].includes(options[i + 1])) role = options[++i];
-      else throw new Error('usage: codex-collab setup [--role admin|member]');
+      if (options[i] === '--role' && ['admin', 'member'].includes(options[i + 1])) { role = options[++i]; terminal = true; }
+      else if (options[i] === '--terminal') terminal = true;
+      else if (options[i] === '--no-open') open = false;
+      else throw new Error('usage: codex-collab setup [--no-open] or setup --terminal [--role admin|member]');
     }
-    const { runSetupWizard } = await import('../scripts/peer/onboarding.mjs');
-    await runSetupWizard({ role });
+    if (terminal) { const { runSetupWizard } = await import('../scripts/peer/onboarding.mjs'); await runSetupWizard({ role }); }
+    else { const { runLocalSetup } = await import('../apps/onboarding/main.mjs'); await runLocalSetup({ open }); }
     return;
   }
 

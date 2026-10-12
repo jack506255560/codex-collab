@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codex-collab:encrypted-invite:v1",
+  "title": "Codex Collab Encrypted Private Onboarding Package v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "kind",
+    "salt",
+    "iv",
+    "tag",
+    "ciphertext"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "codex-collab-encrypted-invite"
+    },
+    "salt": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "iv": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "tag": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "ciphertext": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500000,
+      "contentEncoding": "base64"
+    }
+  },
+  "$comment": "This file is private, not a Git ledger record. Runtime validates decoded salt=16 bytes, IV=12 bytes and tag=16 bytes; scrypt derives AES-256-GCM key from a separate password, then verifies signed history and invitation in the decrypted payload."
+}
