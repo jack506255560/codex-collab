@@ -10,11 +10,14 @@
   → Git agent-collab 写 desktop_poll 任务（open，未开始执行）
   → Alice 已有对话 heartbeat → MCP 原子认领、准备隔离工作树
   → 本对话修改/测试/明确提交 → finish_desktop_task
-  → 固定测试 + 租约/祖先校验 + push → handoff
-  → Alice Bot 通知结果和下一阶段
+  → 固定测试 + 租约/祖先校验 + push → stage_review_requested（v3 默认）
+  → Alice Bot 通知结果、本人审核与 R-版本号
+  → 指定真人通过 → waiting（退回则原阶段从该 SHA 修改）
   → Bob 已有对话 heartbeat → 从准确 checkpoint SHA 接力
-  → review_requested → Bob Bot 通知 → 真人审核/完成
+  → review_requested → Bob Bot 通知 → 指定真人审核 → 管理员完成
 ```
+
+此图采用网页向导 v3 默认审核规则。下文 `setup-local` 创建的隔离静态策略仍为 v2，中间提交直接 handoff，最终由管理员审核；若需测试阶段审核，使用网页向导初始化新团队，或导入旧配置后保存审核规则。
 
 通知不构成调度：机器人不必接收其他机器人的消息。下一位从 Git 发现工作，群里告知“优先 Bob”是人的可见提示，不是假冒成功 @ 或实时唤醒。
 
@@ -112,8 +115,8 @@ node scripts/peer/cli.mjs status "$root/bob-peer.json"
 
 1. 群回复“等待绑定的 Codex 桌面对话轮询认领”，不是“后台 SDK 已开始”。
 2. 指定 Alice 对话出现任务 ID、当前阶段和实际修改/测试记录；Alice Bot 发 claimed。
-3. Alice `finish_desktop_task` 固定验证通过并 push；群里给出结果、SHA、测试与下一阶段优先 Bob。
-4. 指定 Bob 对话从 Alice 的准确 SHA 执行；Bob Bot 发 claimed、review_requested。
+3. Alice `finish_desktop_task` 固定验证通过并 push；群里给出结果、SHA、测试。v3 默认先等待 Alice 本人审核，通过后才显示下一阶段优先 Bob；v2 或关闭中间审核时直接交接。
+4. 指定 Bob 对话从 Alice 的准确 SHA 执行；Bob Bot 发 claimed、review_requested，并给出实际审核人与版本号。
 5. 四种行为通过，最终 checkpoint 包含两阶段代码；main 未自动改变，等待真人审核。
 
 仅测试通过、后台日志出现 claimed、或群里有回复，都不能代替“实际指定已有桌面对话自动执行”的验收。应用是否自动切到该对话不是验收条件，打开该对话应看到执行记录。
@@ -121,9 +124,12 @@ node scripts/peer/cli.mjs status "$root/bob-peer.json"
 审核仍由真人群命令完成：
 
 ```text
-@Alice 协作 审核 T-真实任务ID 通过
+@审核人自己的机器人 协作 审核 T-真实任务ID R-7 通过
+@审核人自己的机器人 协作 审核 T-真实任务ID R-7 退回 | 修改意见
 @Alice 协作 完成 T-真实任务ID
 ```
+
+示例 `R-7` 替换为最新通知版本；v2 任务仍兼容省略版本号的旧命令。一个真人模拟两个机器人时，无独立群命令身份的 Bob 由 Alice 管理员审核。原生 @ 提醒需实群确认；审核与 Git 接力不依赖原生 @。
 
 ## MCP 与运行约束
 
@@ -158,4 +164,4 @@ node scripts/peer/cli.mjs stop "$root/bob-peer.json"
 
 ## 验证范围
 
-2026-10-10 本轮全套 58 项自动测试通过，其中新增 7 项桌面对话轮询测试。本项目自动测试覆盖模拟群命令、真实 stdio MCP、真实 Git/worktree/固定测试、绑定防误用、双对话身份接力、精确 SHA、无闲置续租、过期候补及迟到发布拒绝；模型修改由测试夹具模拟，不冒充真实 Codex 桌面会话。据用户同日确认，本机真实企业微信群 + Alice/Bob 既有 Codex 对话的完整轮询接力已验证；跨两台机器部署尚未验证。
+2026-10-10 完成首批桌面对话轮询验证；2026-10-12 增加阶段审核、退回修订、过期审核拒绝和旧策略升级测试。本项目自动测试覆盖模拟群命令、真实 stdio MCP、真实 Git/worktree/固定测试、绑定防误用、双对话身份接力、精确 SHA、无闲置续租、过期候补及迟到发布拒绝；模型修改由测试夹具模拟，不冒充真实 Codex 桌面会话。据用户同日确认，本机真实企业微信群 + Alice/Bob 既有 Codex 对话的完整轮询接力已验证；跨两台机器部署尚未验证。

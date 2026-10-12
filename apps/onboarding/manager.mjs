@@ -1,3 +1,4 @@
+import { defaultReviewRules } from '../../packages/peer/review.mjs';
 import { SetupError } from './errors.mjs';
 import { createPublicKey, randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
@@ -122,6 +123,7 @@ export class SetupManager {
     const team = buildTeamPolicy({ repo: input.repo_id?.trim() || remote, reviewer: agentId, defaultRoute: caps[0],
       agents: [{ id: agentId, role: 'admin', capabilities: caps, publicKey: await readFile(identity.public_key_file, 'utf8'), wecomUserid: proof.userid }],
       routes: Object.fromEntries(caps.map((cap) => [cap, [agentId]])) });
+    team.schema_version = 3; team.review_rules = defaultReviewRules(team.routes);
     const record = policyVersion(team, null, agentId, (await readPrivateJson(identity.private_key_file)).private_key);
     const state = { id, role: 'admin', agent_id: agentId, repo, remote, identity_path: identity.private_key_file, bootstrap_team: team,
       root_hash: recordHash(record), genesis: record, test_argv: argv,
@@ -333,13 +335,32 @@ export class SetupManager {
     await savePrivate(config.team_file, store.team);
     return this.detail(id);
   }
+  async setReviewRules({ id, expected_version, review_rules }) {
+    const state = await this.state(id);
+    if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('只有已接入的管理员可设置审核规则。');
+    if (!Number.isSafeInteger(expected_version) || expected_version < 1) throw new SetupError('请刷新工作台后再保存审核规则。');
+    const rules = structuredClone(review_rules);
+    const store = await this.profileStore(state); const identity = await readPrivateJson(state.identity_path);
+    await store.registryTransaction(async (history) => {
+      if (history.latest.team.agents[state.agent_id]?.role !== 'admin') throw new SetupError('需要管理员权限。');
+      if (history.latest.version !== expected_version) throw new SetupError('团队规则已更新，请刷新工作台后重新设置。');
+      const team = { ...structuredClone(history.latest.team), schema_version: 3, review_rules: rules };
+      try { validateTeam(team); } catch { throw new SetupError('审核规则无效：每个职责都需要规则，指定同事必须已验证企业微信本人身份。'); }
+      if (canonical(team) === canonical(history.latest.team)) return { value: history.latest.version };
+      const version = policyVersion(team, history.latest, state.agent_id, identity.private_key);
+      return { files: [[versionFile(version), version]], value: version.version };
+    });
+    const { config } = await readPeerConfig(state.existing_config || join(this.path(id), 'peer.json'));
+    await savePrivate(config.team_file, store.team);
+    return this.detail(id);
+  }
   async detail(id, { localOnly = false } = {}) {
     const state = await this.state(id); const result = { id, agent_id: state.agent_id, role: state.role, repo: state.repo, phase: state.phase, error: state.last_error || null };
     if (state.phase === 'imported') result.assignment = { capabilities: state.bundle.invitation.capabilities, bot_id: state.bundle.invitation.bot_id,
       expires_at: state.bundle.invitation.expires_at };
     if (state.role === 'admin' && state.phase === 'ready' && !localOnly) {
-      const store = await this.profileStore(state); result.members = Object.entries(store.team.agents).map(([id, agent]) => ({ id, capabilities: agent.capabilities, role: agent.role }));
-      result.routes = store.team.routes; result.version = store.registry.latest.version; result.requests = [];
+      const store = await this.profileStore(state); result.members = Object.entries(store.team.agents).map(([id, agent]) => ({ id, capabilities: agent.capabilities, role: agent.role, verified_owner: !!agent.wecom_userid }));
+      result.routes = store.team.routes; result.review_rules = store.team.review_rules || null; result.policy_schema_version = store.team.schema_version; result.version = store.registry.latest.version; result.requests = [];
       const files = await readdir(join(store.checkout, registryPath, 'requests')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
       for (const file of files) {
         try {

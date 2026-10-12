@@ -13,11 +13,28 @@
 
 ## 团队版本
 
-`schema_version: 1` 包含 `version`、`parent_hash`、`team_hash`、v2 `team` 策略、`actor_id`、可选的 `enrollment` 和 Ed25519 `signature`。根的 `parent_hash` 为 null；后续记录指向前一条去掉 signature 后 canonical JSON 的 SHA-256。签名覆盖其余全部字段。
+`schema_version: 1` 包含 `version`、`parent_hash`、`team_hash`、v2/v3 `team` 策略、`actor_id`、可选的 `enrollment` 和 Ed25519 `signature`。根的 `parent_hash` 为 null；后续记录指向前一条去掉 signature 后 canonical JSON 的 SHA-256。签名覆盖其余全部字段。
 
 客户端通过加密接入包或明确导入的旧可信策略 pin 根 hash。本机保存最高版本与对应 hash，拒绝回滚和从已观察版本分叉。后续版本须由上一策略中的管理员签名；已有成员公钥、角色和 userid 不可偷偷替换。
 
-每个新任务的 created 事件 pin 当时的 `team_hash`。重放、claim、续租、审核和候补均使用那个版本，而不是直接把最新路由用于旧任务。因此加入新成员影响此后创建的任务，旧任务不改变授权或候补。
+每个新任务的 created 事件 pin 当时的 `team_hash`。重放、claim、续租、审核和候补均使用那个版本，而不是直接把最新路由用于旧任务。因此加入新成员或更新审核规则影响此后创建的任务，旧任务不改变授权或候补。
+
+## 真人审核策略 v3
+
+新网页团队初始化使用 `team.schema_version: 3`；团队版本记录的 schema 仍为 1，任务 spec/event 的 schema 仍为 2。v3 策略必须为每个 route 设置一条规则：
+
+```json
+{
+  "frontend": { "required": true, "reviewer": "owner", "notify": "owner" },
+  "backend": { "required": true, "reviewer": "member:alice", "notify": "reviewer" }
+}
+```
+
+`required` 控制中间阶段审核。`reviewer` 支持实际执行者本人 `owner`、团队指定管理员 `admin`、`member:<id>`；`notify` 支持本人、审核人、不额外通知 `none`、指定成员。指定成员必须已验证企业微信本人身份；默认 owner 没有群命令身份时回落到团队管理员。选择 `none` 仅关闭额外通知，当前审核人仍会出现在通知中。最终阶段始终需要审核；规则关闭时最终审核人是团队指定管理员。
+
+管理员保存时检查最新策略版本，经签名版本链发布。新增 route 自动补齐默认审核规则。v2 禁止附加 review_rules；旧客户端不支持 v3 时应升级后再参与，不能靠忽略规则继续运行。升级不能降回 v2。新规则只用于新任务。
+
+中间提交会发布 `stage_review_requested`，将状态置为 `stage_review`，锁定本次实际执行者、审核人和下一阶段。`reviewed: approved` 才开放下一阶段；`changes_requested` 回到同一阶段并保留 checkpoint 和修改意见。最后提交的 `review_requested` 进入 `review`，通过后为 `approved`，仍须管理员 `completed`。审核入口需要当前 `R-<seq>`，退回必须有修改意见，防止旧通知被用于批准后来重新提交的结果。完整审核事件保存在任务账本。
 
 ## 邀请、申请、批准
 
@@ -25,7 +42,7 @@
 
 成员的私钥在成员本机生成。通过群验证码得到 userid/chatid 后，申请包括成员公钥和这些公开绑定，并由成员密钥与邀请 claim 密钥分别签名。管理员核对后发布新的团队版本；版本的 enrollment 包含对应 invite_id 和 request_id。相同申请重试幂等，另一个身份复用已消费邀请会被拒绝。已经批准的同一身份恢复本机配置不受后续邀请过期影响。
 
-目前版本链用于追加成员、能力路由和本机恢复。机器人轮换、密钥轮换、成员撤销与群迁移没有网页操作；不要手改签名文件实现这些动作。多个管理员同时写入时，经本机锁、Git fast-forward push 与重新校验重试处理。
+目前版本链用于追加成员、能力路由、审核规则和本机恢复。机器人轮换、密钥轮换、成员撤销与群迁移没有网页操作；不要手改签名文件实现这些动作。多个管理员同时写入时，经本机锁、Git fast-forward push 与重新校验重试处理。
 
 ## 加密接入包
 

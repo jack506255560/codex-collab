@@ -1,3 +1,4 @@
+import { validateReviewRules } from './review.mjs';
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 
@@ -9,7 +10,7 @@ export const canonical = (value) => {
 export const digest = (value) => createHash('sha256').update(canonical(value)).digest('hex');
 const idPattern = /^[a-zA-Z0-9_-]{1,64}$/;
 export function validateTeam(team) {
-  if (team?.schema_version !== 2 || typeof team.repo !== 'string' || !team.repo || !idPattern.test(team.default_route ?? '')) throw new Error('invalid peer team configuration');
+  if (![2, 3].includes(team?.schema_version) || typeof team.repo !== 'string' || !team.repo || !idPattern.test(team.default_route ?? '')) throw new Error('invalid peer team configuration');
   if (!team.agents || !team.routes || !Object.keys(team.agents).length) throw new Error('team needs agents and routes');
   const keys = new Set(); const users = new Set();
   for (const [id, agent] of Object.entries(team.agents)) {
@@ -30,6 +31,8 @@ export function validateTeam(team) {
     if (!Number.isSafeInteger(policy?.[key]) || policy[key] < min || policy[key] > max) throw new Error(`invalid policy.${key}`);
   }
   if (policy.clock_skew_ms >= policy.lease_ms / 2) throw new Error('clock skew must be below half the lease');
+  if (team.schema_version === 2 && team.review_rules !== undefined || team.schema_version === 3 && team.review_rules === undefined) throw new Error('human review rules require team policy v3');
+  validateReviewRules(team);
   return team;
 }
 export function generateIdentity() {

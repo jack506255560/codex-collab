@@ -1,3 +1,4 @@
+import { stageReviewRule } from './review.mjs';
 import { randomUUID } from 'node:crypto';
 import { digest } from './config.mjs';
 import { canClaimDesktop, Conflict, Denied, eligible, leaseToken, validRefs } from './protocol.mjs';
@@ -57,29 +58,32 @@ export class PeerService {
     if (tip !== refs.commit.toLowerCase()) throw new Conflict('code commit must be the shared branch tip');
   }
   async report(id, payload, token = {}, idempotencyKey = randomUUID(), expectedSeq) {
-    const allowed = ['progress', 'checkpoint', 'handoff', 'review_requested', 'run_failed', 'blocked', 'reviewed', 'completed', 'cancelled', 'reopened'];
+    const allowed = ['progress', 'checkpoint', 'handoff', 'stage_review_requested', 'review_requested', 'run_failed', 'blocked', 'reviewed', 'completed', 'cancelled', 'reopened'];
     if (!allowed.includes(payload.type)) throw new Error('unsupported peer report');
     const result = await this.store.transact(id, idempotencyKey, async (task, _tasks, now) => {
       if (!task) throw new Error('unknown task');
-      if (expectedSeq !== undefined && expectedSeq !== task.state.seq) throw new Conflict('stale task revision');
-      const desktop = ['handoff', 'checkpoint', 'review_requested'].includes(payload.type) && task.state.status === 'desktop' && task.state.assignee === this.agentId;
+      if (expectedSeq !== undefined && (!Number.isSafeInteger(expectedSeq) || expectedSeq !== task.state.seq)) throw new Conflict('stale task revision');
+      const desktop = ['handoff', 'checkpoint', 'stage_review_requested', 'review_requested'].includes(payload.type) && task.state.status === 'desktop' && task.state.assignee === this.agentId;
       const human = ['reviewed', 'completed', 'cancelled', 'reopened'].includes(payload.type);
       if (!human && !desktop) this.checkLease(task, token, now);
-      if (['reviewed', 'completed', 'cancelled', 'reopened'].includes(payload.type) && (task.team || this.team).agents[this.agentId]?.role !== 'admin') throw new Denied('human administrator approval required');
-      if (['checkpoint', 'handoff', 'review_requested'].includes(payload.type)) {
+      if (payload.type === 'reviewed' && this.agentId !== task.state.assignee) throw new Denied('only the pinned human reviewer may decide; human administrator approval required for legacy tasks');
+      if (payload.type === 'reviewed' && (task.team || this.team).review_rules && expectedSeq === undefined) throw new Conflict('review requires the R-sequence from the current notification');
+      if (['completed', 'cancelled', 'reopened'].includes(payload.type) && (task.team || this.team).agents[this.agentId]?.role !== 'admin') throw new Denied('human administrator approval required');
+      if (['checkpoint', 'handoff', 'stage_review_requested', 'review_requested'].includes(payload.type)) {
         await this.verifyRefs(payload.refs);
         if (task.state.checkpoint) {
           try { await git(this.store.checkout, 'merge-base', '--is-ancestor', task.state.checkpoint.commit, payload.refs.commit); }
           catch { throw new Conflict('code must descend from the pinned handoff commit'); }
         }
       }
-      const event = { type: payload.type, ...(!desktop && !human ? token : {}) };
+      const type = payload.type === 'handoff' && stageReviewRule(task.team || this.team, task.spec.workflow[task.state.stage]).required ? 'stage_review_requested' : payload.type;
+      const event = { type, ...(!desktop && !human ? token : {}) };
       for (const field of ['summary', 'decision', 'refs']) if (payload[field] !== undefined) event[field] = payload[field];
-      if (payload.type === 'handoff') event.next_stage = task.state.stage + 1;
+      if (['handoff', 'stage_review_requested'].includes(type)) event.next_stage = task.state.stage + 1;
       if (payload.type === 'completed') event.refs = task.state.checkpoint;
       return { event };
     });
-    return this.publish(result, payload.type);
+    return this.publish(result, result.events.at(-1).type);
   }
   async handoff(id, payload, expectedSeq, key) { const task = await this.read(id); if (task.spec.execution_mode === 'desktop_poll') throw new Denied('use the bound desktop finish tool'); return this.report(id, { type: 'handoff', ...payload }, leaseToken(task), key, expectedSeq); }
   async requestReview(id, payload, expectedSeq, key) { const task = await this.read(id); if (task.spec.execution_mode === 'desktop_poll') throw new Denied('use the bound desktop finish tool'); return this.report(id, { type: 'review_requested', ...payload }, leaseToken(task), key, expectedSeq); }

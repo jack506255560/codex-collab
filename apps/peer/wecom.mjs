@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { digest } from '../../packages/peer/config.mjs';
+import { reviewNotificationMembers } from '../../packages/peer/review.mjs';
 import { reducePeerTask } from '../../packages/peer/protocol.mjs';
 import { wecomDiagnostic } from '../../scripts/wecom-diagnostic.mjs';
 export function parsePeerCommand(raw) {
@@ -12,9 +13,15 @@ export function parsePeerCommand(raw) {
   if (create) return { action: 'create', workflow: create[1]?.split('>'), title: create[2].trim(), acceptance: create[3]?.split(';').map((s) => s.trim()).filter(Boolean) || ['人工确认验收条件'] };
   const reopen = /^协作\s+重试\s+(T-[A-Z0-9-]{1,62})\s+(.+)$/.exec(text);
   if (reopen) return { action: 'reopen', id: reopen[1], summary: reopen[2].trim() };
-  const rest = /^协作\s+(状态|审核|完成|取消)\s+(T-[A-Z0-9-]{1,62})(?:\s+(通过|退回))?$/.exec(text);
-  if (!rest || (rest[1] === '审核' ? !rest[3] : !!rest[3])) return null;
-  return { action: { 状态: 'status', 审核: 'review', 完成: 'complete', 取消: 'cancel' }[rest[1]], id: rest[2], decision: rest[3] === '通过' ? 'approved' : 'changes_requested' };
+  const review = /^协作\s+审核\s+(T-[A-Z0-9-]{1,62})(?:\s+R-([1-9][0-9]*))?\s+(通过|退回)(?:\s*\|\s*(.+))?$/.exec(text);
+  if (review) {
+    const expectedSeq = review[2] ? Number(review[2]) : undefined;
+    if (expectedSeq !== undefined && !Number.isSafeInteger(expectedSeq)) return null;
+    return { action: 'review', id: review[1], decision: review[3] === '通过' ? 'approved' : 'changes_requested',
+      ...(expectedSeq !== undefined ? { expectedSeq } : {}), ...(review[4] ? { summary: review[4].trim() } : {}) };
+  }
+  const rest = /^协作\s+(状态|完成|取消)\s+(T-[A-Z0-9-]{1,62})$/.exec(text);
+  return rest ? { action: { 状态: 'status', 完成: 'complete', 取消: 'cancel' }[rest[1]], id: rest[2] } : null;
 }
 export async function dispatchPeerWecom(frame, { service, config, reply }) {
   if (config.commands_enabled === false) return false;
@@ -41,29 +48,65 @@ export async function dispatchPeerWecom(frame, { service, config, reply }) {
     } else {
       task = await service.read(command.id);
       if (task.spec.source?.channel !== 'wecom' || task.spec.source.chat_id !== body.chatid) throw new Error('group mismatch');
-      if (command.action === 'review') task = await service.report(command.id, { type: 'reviewed', decision: command.decision }, {}, key);
+      if (command.action === 'review') {
+        if ((task.team || service.team).schema_version === 3 && command.expectedSeq === undefined) {
+          await reply(frame, `请使用当前审核通知中的版本号：协作 审核 ${command.id} R-${task.state.seq} 通过；退回时追加 | 修改意见。`); return true;
+        }
+        if (command.expectedSeq !== undefined && command.expectedSeq !== task.state.seq) {
+          await reply(frame, '审核版本已变化，请查看最新审核通知或查询任务状态，再使用新的 R-版本号。'); return true;
+        }
+        if ((task.team || service.team).schema_version === 3 && command.decision === 'changes_requested' && !command.summary) {
+          await reply(frame, '退回需要填写修改意见：协作 审核 <任务ID> R-<版本号> 退回 | 修改意见'); return true;
+        }
+        if (task.state.assignee !== service.agentId || !['stage_review', 'review'].includes(task.state.status)) {
+          await reply(frame, '当前任务未等待你审核；请由通知中指定的审核人 @ 自己绑定的机器人操作。'); return true;
+        }
+        task = await service.report(command.id, { type: 'reviewed', decision: command.decision, ...(command.summary ? { summary: command.summary } : {}) }, {}, key, command.expectedSeq);
+      }
       if (command.action === 'complete') task = await service.report(command.id, { type: 'completed' }, {}, key);
       if (command.action === 'cancel') task = await service.report(command.id, { type: 'cancelled' }, {}, key);
       if (command.action === 'reopen') task = await service.report(command.id, { type: 'reopened', summary: command.summary }, {}, key);
-      text = `任务 ${task.spec.id}：${task.state.status}；负责人 ${task.state.assignee || '待认领'}；步骤 ${task.state.stage + 1}/${task.spec.workflow.length}；轮次 ${task.state.epoch}。`;
+      text = `任务 ${task.spec.id}：${task.state.status}；负责人 ${task.state.assignee || '待认领'}；步骤 ${task.state.stage + 1}/${task.spec.workflow.length}；轮次 ${task.state.epoch}；版本 R-${task.state.seq}。`;
     }
   } catch { text = '协作操作未成功：请核对任务所属群、本人权限和本机 Git 连接。'; }
   await reply(frame, text); return true;
 }
 
+// Task prose cannot supply mentions; only signed team identities may be notified.
+const notificationText = (value) => String(value).replace(/<@/g, '＠').replace(/</g, '＜').replace(/>/g, '＞');
 export function formatPeerNotification(task, type, agentId, team) {
   const base = `[Codex Collab · ${agentId}] ${task.spec.id} ${type}\n状态：${task.state.status}；负责人：${task.state.assignee || '待认领'}；轮次：${task.state.epoch}`;
-  if (task.spec.execution_mode !== 'desktop_poll') return base;
-  const event = task.events.at(-1);
-  const detail = [];
-  if (type === 'created') detail.push('等待指定 Codex 对话轮询认领；尚未开始执行。');
-  if (type === 'claimed') detail.push(`绑定的 Codex 对话已认领，开始 ${task.spec.workflow[task.state.stage]} 阶段。`);
-  if (['handoff', 'review_requested'].includes(type)) {
-    // Markdown is notification text, never a command to another bot. Scheduling uses Git.
-    if (event.summary) detail.push(`结果：${event.summary}`);
-    if (event.refs) detail.push(`提交：${event.refs.commit}\n测试：${event.refs.tests}`);
-    if (type === 'handoff') detail.push(`下一阶段：${task.spec.workflow[task.state.stage]}；优先 ${team.routes[task.spec.workflow[task.state.stage]][0]}，等待其 Codex 对话认领。`);
-    else detail.push('全部阶段已提交，等待真人审核；未自动合并 main。');
+  const event = task.events.at(-1), detail = [];
+  const next = () => {
+    const route = task.spec.workflow[task.state.stage];
+    return `下一阶段：${route}；优先 ${team.routes[route][0]}，等待其 Codex ${task.spec.execution_mode === 'desktop_poll' ? '对话轮询' : '执行器'}认领。`;
+  };
+  if (type === 'created' && task.spec.execution_mode === 'desktop_poll') detail.push('等待指定 Codex 对话轮询认领；尚未开始执行。');
+  if (type === 'claimed') detail.push(`开始 ${task.spec.workflow[task.state.stage]} 阶段。${task.state.review_feedback ? `\n修改意见：${notificationText(task.state.review_feedback)}` : ''}`);
+  if (['handoff', 'stage_review_requested', 'review_requested'].includes(type)) {
+    const stage = type === 'handoff' ? task.state.stage - 1 : task.state.stage;
+    detail.push(`已提交阶段：${stage + 1}/${task.spec.workflow.length} · ${task.spec.workflow[stage]}`);
+    if (event.summary) detail.push(`结果：${notificationText(event.summary)}`);
+    if (event.refs) detail.push(`分支：${event.refs.branch}\n提交：${event.refs.commit}\n测试：${notificationText(event.refs.tests)}`);
+    const members = reviewNotificationMembers(task, team);
+    if (members.length) {
+      // WeCom's Markdown extension is best-effort on the smart-bot transport.
+      // Encrypted callback userids and actual native @ rendering need group verification.
+      detail.push(`通知本人：${members.map((id) => {
+        const userid = team.agents[id].wecom_userid;
+        return /^[a-zA-Z0-9_-]{1,128}$/.test(userid) ? `${id} <@${userid}>` : id;
+      }).join('、')}`);
+    }
+    if (type === 'handoff') detail.push(next());
+    else {
+      detail.push(`${type === 'stage_review_requested' ? '本阶段等待真人审核，通过后继续下一阶段。' : '全部阶段已提交，等待真人审核。'}\n审核人：${task.state.assignee}；版本：R-${task.state.seq}`);
+      detail.push(`请审核人 @ 自己绑定的机器人发送：\n协作 审核 ${task.spec.id} R-${task.state.seq} 通过\n协作 审核 ${task.spec.id} R-${task.state.seq} 退回 | 修改意见`);
+    }
+  }
+  if (type === 'reviewed') {
+    if (event.decision === 'changes_requested') detail.push(`审核退回，${task.spec.workflow[task.state.stage]} 阶段重新执行。\n修改意见：${notificationText(task.state.review_feedback)}\n从提交 ${task.state.checkpoint.commit} 继续修改。`);
+    else if (task.state.status === 'waiting') detail.push('真人审核已通过。', next());
+    else detail.push(`最终审核已通过；请管理员 @ 自己的机器人发送：协作 完成 ${task.spec.id}。代码分支尚未合并 main。`);
   }
   if (type === 'run_failed') detail.push('本阶段未成功，按 Git 路由交给剩余候选或等待人工处理。');
   return [base, ...detail].join('\n');

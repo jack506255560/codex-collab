@@ -131,13 +131,13 @@ export PATH="$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node
 2. 当前 Codex 在自己的工作区完成 frontend，运行可信测试。
 3. 在目标仓库创建并 push `codex/*` 分支。
 4. `read_task` 获取最新 `seq`，调用 `handoff_task`，传完整 commit SHA、分支、测试证据和下一步摘要。
-5. Bob Runner 看到 `waiting` 状态，按 route 顺序和 lease 规则自动认领并创建新 Codex 会话。
+5. v3 必须审核的职责先进入 `stage_review`，由通知中的指定真人通过后才进入 `waiting`；关闭中间审核或 v2 时直接交接。Bob Runner 看到 `waiting` 状态，按 route 顺序和 lease 规则自动认领并创建新 Codex 会话。
 6. Bob 完成后若还有阶段继续 handoff；最后阶段调用 `request_review`。
-7. Alice 真人用自己的机器人或 CLI `review approved` 后再 `complete`。
+7. 最终指定审核人用自己的机器人或 CLI `review approved R-<seq>` 审核，再由管理员 `complete`。v2 最终审核人仍为管理员。
 
 ### B. 两个桌面对话手动接力
 
-给两个 agent 私有配置设置 `auto_execute: false`，Runner 仍可连接不同 Bot 中继通知，但不认领/执行代码。MCP 用 `get_identity` 确认本对话身份。Alice 创建 `desktop` 任务，push 后 handoff；Bob 在第二个项目对话读取最新任务，用 `claim_desktop_task(task_id, expected_seq)` 原子保留下一阶段，随后从准确 checkpoint SHA 创建自己的分支，完成并 `request_review`。
+给两个 agent 私有配置设置 `auto_execute: false`，Runner 仍可连接不同 Bot 中继通知，但不认领/执行代码。MCP 用 `get_identity` 确认本对话身份。Alice 创建 `desktop` 任务，push 后 handoff（v3 必须审核时先由真人通过）；Bob 在第二个项目对话读取最新任务，用 `claim_desktop_task(task_id, expected_seq)` 原子保留下一阶段，随后从准确 checkpoint SHA 创建自己的分支，完成并 `request_review`。
 
 桌面手动认领仅接受等待中的 `desktop` 工作流；遵循路由、候选顺序和并发容量。保留成功后状态为 `desktop`、assignee 为 Bob，不再由 Runner 自动认领。**此保留没有执行 lease，也没有下线自动候补**；需要真人继续对话，或管理员取消后创建新任务。若需要 lease/自动候补，使用自动 Runner 模式。
 
@@ -148,11 +148,12 @@ export PATH="$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node
 ```text
 @机器人 协作 创建 [frontend>backend] 增加登录页 | npm test 通过;登录页可访问
 @机器人 协作 状态 T-...
-@机器人 协作 审核 T-... 通过
+@审核人自己的机器人 协作 审核 T-... R-7 通过
+@审核人自己的机器人 协作 审核 T-... R-7 退回 | 修改意见
 @机器人 协作 完成 T-...
 ```
 
-群创建的任务是 `automatic`，两个接收方配置必须允许 `auto_execute`（默认开启；`false` 会禁用执行）。`commands_enabled=false` 只禁用 Bot 群命令入口，不禁用 Runner 执行。任务会按 `team.json` 的 route 自动分配，不需要手工 @ Bob 的机器人。候补规则是：首选 agent 在 claim timeout 内没有成功认领，或租约到期/运行失败，就由下一位候选人接管；所有候选失败后任务进入 `blocked`。管理员可发：
+本节默认底层 SDK 配置，群创建的任务是 `automatic`；网页向导的 `desktop_poll` 则由绑定的已有对话轮询。SDK 配置中，两个接收方配置必须允许 `auto_execute`（默认开启；`false` 会禁用执行）。`commands_enabled=false` 只禁用 Bot 群命令入口，不禁用 Runner 执行。任务会按 `team.json` 的 route 自动分配，不需要手工 @ Bob 的机器人。候补规则是：首选 agent 在 claim timeout 内没有成功认领，或租约到期/运行失败，就由下一位候选人接管；所有候选失败后任务进入 `blocked`。管理员可发：
 
 ```text
 @机器人 协作 重试 T-... 修复测试环境后重新执行
@@ -163,10 +164,13 @@ export PATH="$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node
 ```sh
 pnpm peer list /abs/private/alice-peer.json
 pnpm peer read /abs/private/alice-peer.json T-...
-pnpm peer review /abs/private/alice-peer.json T-... approved
+pnpm peer review /abs/private/reviewer-peer.json T-... approved R-7
+pnpm peer review /abs/private/reviewer-peer.json T-... changes_requested R-7 '请补充键盘操作和测试'
 pnpm peer complete /abs/private/alice-peer.json T-...
 pnpm peer reopen /abs/private/alice-peer.json T-... '修复测试环境后重试'
 ```
+
+v3 审核需要最新审核通知中的 R-版本号，退回必须附修改意见；旧 v2 任务仍兼容省略版本号。阶段审核规则、owner 回落和新旧任务策略见 [团队登记协议](team-registry.md)。
 
 `probe` 通过新建临时只读 SDK 会话向当前 provider 发一条极小请求（会产生一次模型调用），不连接机器人或写任务账本；结果保存在私有 `provider-probe.json`。例如 `pnpm peer probe /abs/private/bob-peer.json`。
 

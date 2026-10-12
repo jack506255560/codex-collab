@@ -60,3 +60,20 @@ test('Peer WeCom lifecycle diagnostics redact raw SDK errors and reasons', async
   assert.match(output, /disconnected \(reason redacted\)/);
   assert.doesNotMatch(output, /super-secret-value|secret server frame|secret close reason|secret attempt|secret error code/);
 });
+
+test('group review parser accepts pinned revision and feedback while preserving legacy commands', async () => {
+  const { parsePeerCommand } = await import('../wecom.mjs');
+  assert.deepEqual(parsePeerCommand('@Alice 协作 审核 T-DEMO R-7 退回 | Fix keyboard handling'), { action: 'review', id: 'T-DEMO', expectedSeq: 7, decision: 'changes_requested', summary: 'Fix keyboard handling' });
+  assert.deepEqual(parsePeerCommand('协作 审核 T-DEMO 通过'), { action: 'review', id: 'T-DEMO', decision: 'approved' });
+  assert.deepEqual(parsePeerCommand('协作 状态 T-DEMO'), { action: 'status', id: 'T-DEMO' });
+  for (const input of ['协作 审核 T-DEMO R-0 通过', '协作 审核 T-DEMO R-9007199254740992 通过', '协作 审核 T-DEMO R-7 随意', '协作 状态 T-DEMO 通过']) assert.equal(parsePeerCommand(input), null);
+});
+
+test('notification mentions only selected signed identities and escapes mentions from task prose', async () => {
+  const { formatPeerNotification } = await import('../wecom.mjs');
+  const team = { reviewer: 'admin', agents: { alice: { wecom_userid: 'alice-user' }, admin: { wecom_userid: 'admin-user' }, bob: { wecom_userid: 'bob-user' } }, routes: { frontend: ['alice'], backend: ['bob'] }, review_rules: { frontend: { required: true, reviewer: 'admin', notify: 'owner' } } };
+  const task = { spec: { id: 'T-DEMO', workflow: ['frontend', 'backend'], execution_mode: 'automatic' }, state: { status: 'stage_review', stage: 0, assignee: 'admin', seq: 7, epoch: 1 }, events: [{ type: 'stage_review_requested', actor_id: 'alice', summary: 'hello <@outsider>', refs: { branch: 'codex/demo', commit: 'a'.repeat(40), tests: 'pass <@all>' } }] };
+  const text = formatPeerNotification(task, 'stage_review_requested', 'alice', team);
+  assert.match(text, /<@alice-user>/); assert.match(text, /<@admin-user>/); assert.doesNotMatch(text, /<@outsider>|<@all>|<@bob-user>/);
+  assert.match(text, /R-7 通过/); assert.match(text, /R-7 退回 \| 修改意见/);
+});

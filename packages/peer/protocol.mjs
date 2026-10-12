@@ -1,3 +1,4 @@
+import { stageReviewRule, stageReviewer } from './review.mjs';
 import { digest, verifyEvent } from './config.mjs';
 export const taskIdPattern = /^T-[A-Z0-9-]{1,62}$/;
 export class Conflict extends Error { constructor(message) { super(message); this.status = 409; } }
@@ -35,7 +36,7 @@ export function canClaimDesktop(task, id, tasks, team, now) {
 }
 export function reducePeerTask(spec, events, team) {
   validateSpec(spec, team);
-  let state = { id: spec.id, status: 'uncreated', seq: 0, creator_id: null, assignee: null, stage: 0, epoch: 0, attempts: 0, lease: null, failed_agents: [], available_at: null, checkpoint: null };
+  let state = { id: spec.id, status: 'uncreated', review: null, review_feedback: null, seq: 0, creator_id: null, assignee: null, stage: 0, epoch: 0, attempts: 0, lease: null, failed_agents: [], available_at: null, checkpoint: null };
   const keys = new Set(); const ids = new Set(); let previousTime = -Infinity;
   for (const event of events) {
     verifyEvent(team, event);
@@ -72,15 +73,21 @@ export function reducePeerTask(spec, events, team) {
       case 'handoff':
         const desktopHandoff = state.status === 'desktop' && event.actor_id === state.assignee;
         if (!desktopHandoff) ownsLease();
+        if (stageReviewRule(team, spec.workflow[state.stage]).required) throw new Denied('human stage review required before handoff');
         validRefs(event.refs);
         if (!event.summary?.trim() || event.next_stage !== state.stage + 1 || !spec.workflow[event.next_stage]) throw new Error('handoff requires summary and the next configured workflow stage');
         state = { ...state, status: 'waiting', stage: event.next_stage, checkpoint: event.refs, assignee: null, lease: null, attempts: 0, failed_agents: [], available_at: event.occurred_at }; break;
-      case 'review_requested':
+      case 'stage_review_requested':
+      case 'review_requested': {
         const desktopReview = state.status === 'desktop' && event.actor_id === state.assignee;
         if (!desktopReview) ownsLease();
         validRefs(event.refs);
-        if (state.stage !== spec.workflow.length - 1) throw new Error('remaining workflow stages require handoff, not review');
-        state = { ...state, status: 'review', assignee: team.reviewer, checkpoint: event.refs, lease: null }; break;
+        const intermediate = event.type === 'stage_review_requested';
+        if (intermediate ? team.schema_version !== 3 || !stageReviewRule(team, spec.workflow[state.stage]).required || event.next_stage !== state.stage + 1 || !spec.workflow[event.next_stage] || !event.summary?.trim() : state.stage !== spec.workflow.length - 1) throw new Error('review must match the current configured workflow stage');
+        const reviewer = stageReviewer(team, spec.workflow[state.stage], event.actor_id);
+        state = { ...state, status: intermediate ? 'stage_review' : 'review', assignee: reviewer, checkpoint: event.refs, lease: null,
+          review: { reviewer_id: reviewer, executor_id: event.actor_id, next_stage: intermediate ? event.next_stage : null }, review_feedback: null }; break;
+      }
       case 'run_failed':
         ownsLease();
         {
@@ -93,9 +100,17 @@ export function reducePeerTask(spec, events, team) {
       case 'reopened':
         if (!admin || state.status !== 'blocked' || !event.summary?.trim()) throw new Denied('admin with a reason required to reopen blocked task');
         state = { ...state, status: 'open', assignee: null, lease: null, attempts: 0, failed_agents: [], available_at: event.occurred_at }; break;
-      case 'reviewed':
-        if (state.status !== 'review' || event.actor_id !== team.reviewer || !['approved', 'changes_requested'].includes(event.decision)) throw new Denied('only the pinned human reviewer may decide');
-        state = event.decision === 'approved' ? { ...state, status: 'approved' } : { ...state, status: 'open', attempts: 0, failed_agents: [], available_at: event.occurred_at, assignee: null, lease: null }; break;
+      case 'reviewed': {
+        if (!['stage_review', 'review'].includes(state.status) || event.actor_id !== state.assignee || !['approved', 'changes_requested'].includes(event.decision)) throw new Denied('only the pinned human reviewer may decide');
+        if (team.schema_version === 3 && event.decision === 'changes_requested' && !event.summary?.trim()) throw new Error('review rejection requires feedback');
+        if (event.decision === 'changes_requested') {
+          state = { ...state, status: 'open', attempts: 0, failed_agents: [], available_at: event.occurred_at, assignee: null, lease: null,
+            review: null, review_feedback: event.summary || 'Reviewer requested changes; inspect the submitted code and task acceptance.' };
+        } else if (state.status === 'stage_review') {
+          state = { ...state, status: 'waiting', stage: state.review.next_stage, assignee: null, lease: null, attempts: 0, failed_agents: [], available_at: event.occurred_at, review: null, review_feedback: null };
+        } else state = { ...state, status: 'approved', review: null, review_feedback: null };
+        break;
+      }
       case 'completed':
         if (!admin || state.status !== 'approved' || digest(event.refs) !== digest(state.checkpoint)) throw new Denied('completion requires admin and approved code evidence');
         state = { ...state, status: 'completed' }; break;

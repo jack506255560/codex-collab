@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-let currentId, pending, discovery, timer, busy = false;
+let currentId, pending, discovery, timer, busy = false, reviewVersion = null;
 function notice(text) { $('notice').textContent = text; $('notice').hidden = !text; }
 function show(view) { for (const section of document.querySelectorAll('main>section')) section.hidden = section.id !== view; }
 async function api(path, body) {
@@ -50,6 +50,7 @@ async function loadProfile(id) {
   $('members').replaceChildren(); $('routes').replaceChildren();
   for (const member of value.members || []) $('members').append(text('p', `${member.id} · ${member.role === 'admin' ? '管理员' : '成员'} · ${member.capabilities.join(', ')}`));
   for (const [capability, candidates] of Object.entries(value.routes || {})) $('routes').append(text('p', `${capability}：${candidates.join(' → ')}（首选 → 候补）`));
+  renderReviewRules(value);
   $('exports').replaceChildren(); $('requests').replaceChildren();
   for (const invitation of value.exports || []) {
     const row = document.createElement('div'); row.className = 'card'; row.append(text('span', `${invitation.agent_id} · 有效至 ${new Date(invitation.expires_at).toLocaleDateString()}`));
@@ -60,6 +61,43 @@ async function loadProfile(id) {
   }
   if (!(value.requests || []).length) $('requests').append(text('p', '暂无待确认申请。'));
 }
+function renderReviewRules(profile) {
+  $('review-rules').replaceChildren(); reviewVersion = null;
+  const ready = profile.role === 'admin' && profile.phase === 'ready' && profile.routes && Number.isSafeInteger(profile.version);
+  $('review-form').hidden = !ready;
+  if (!ready) { $('review-policy-note').textContent = '团队同步成功后可设置审核规则。'; return; }
+  reviewVersion = profile.version;
+  $('review-policy-note').textContent = profile.policy_schema_version === 3
+    ? '默认由执行者本人审核。没有本人群身份的测试机器人由管理员审核。'
+    : '此团队使用旧版规则。保存后升级审核协议；请先让所有成员升级工具并重启机器人与 MCP。';
+  const members = (profile.members || []).filter((member) => member.verified_owner);
+  function select(label, field, selected, options) {
+    const wrapper = text('label', label), input = document.createElement('select'); input.dataset.field = field;
+    for (const [value, title] of options) { const option = text('option', title); option.value = value; input.append(option); }
+    input.value = selected; wrapper.append(input); return wrapper;
+  }
+  for (const route of Object.keys(profile.routes)) {
+    const rule = profile.review_rules?.[route] || { required: true, reviewer: 'owner', notify: 'owner' };
+    const card = document.createElement('fieldset'); card.dataset.route = route; card.append(text('legend', route));
+    const check = text('label', '中间阶段提交后需要真人审核'); check.className = 'checkbox';
+    const required = document.createElement('input'); required.type = 'checkbox'; required.dataset.field = 'required'; required.checked = rule.required; check.prepend(required);
+    const row = document.createElement('div'); row.className = 'row';
+    const people = members.map((member) => [`member:${member.id}`, `指定同事：${member.id}`]);
+    row.append(select('审核人', 'reviewer', rule.reviewer, [['owner', '执行者本人'], ['admin', '管理员'], ...people]),
+      select('额外通知对象', 'notify', rule.notify, [['owner', '执行者本人'], ['reviewer', '审核人'], ['none', '不额外通知'], ...people]));
+    card.append(check, row); $('review-rules').append(card);
+  }
+}
+$('review-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
+  if (!Number.isSafeInteger(reviewVersion)) throw new Error('请先刷新工作台获取团队规则。');
+  const review_rules = {};
+  for (const row of $('review-rules').querySelectorAll('fieldset')) {
+    const field = (name) => row.querySelector(`[data-field="${name}"]`);
+    review_rules[row.dataset.route] = { required: field('required').checked, reviewer: field('reviewer').value, notify: field('notify').value };
+  }
+  await api('review-rules', { id: currentId, expected_version: reviewVersion, review_rules });
+  await loadProfile(currentId); notice('审核规则已保存，新任务将使用此规则。');
+}); };
 for (const button of document.querySelectorAll('[data-view]')) button.onclick = () => action(async () => { clearInterval(timer); show(button.dataset.view); if (button.dataset.view === 'home') await overview(); });
 $('admin-form').onsubmit = (event) => { event.preventDefault(); action(async () => { const input = values(event.target); input.test_argv = JSON.parse(input.test_argv); pending = { type: 'admin', input }; const session = await api('discovery', { bot_id: input.bot_id, secret: input.secret, repo: input.repo }); pending.credentials = { bot_id: input.bot_id, secret: input.secret, repo: input.repo }; delete pending.input.secret; event.target.elements.secret.value = ''; await verifyView(session); }); };
 $('join-form').onsubmit = (event) => { event.preventDefault(); action(async () => { const input = values(event.target); input.content = await input.file.text(); delete input.file; const profile = await api('import', input); event.target.elements.password.value = ''; currentId = profile.id; pending = { type: 'member', id: profile.id }; await verifyView(await api('discovery', { profile_id: profile.id })); }); };

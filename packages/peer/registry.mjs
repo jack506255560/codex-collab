@@ -1,6 +1,7 @@
 import { createPublicKey, sign, verify } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { defaultReviewRules } from './review.mjs';
 import { canonical, digest, validateTeam } from './config.mjs';
 
 export const registryPath = '.agent-collab/team';
@@ -40,6 +41,7 @@ export function validateHistory(records, rootHash) {
     if (authority.agents[record.actor_id]?.role !== 'admin' || digest(team) !== record.team_hash || previous && team.repo !== authority.repo) fail();
     verifyRecord(record, authority.agents[record.actor_id].public_key);
     // Existing keys/roles remain stable; old tasks continue to use old routes.
+    if (previous && team.schema_version < authority.schema_version) fail();
     if (previous) for (const [id, agent] of Object.entries(authority.agents)) {
       if (!team.agents[id] || team.agents[id].public_key !== agent.public_key || team.agents[id].role !== agent.role || team.agents[id].wecom_userid !== agent.wecom_userid) fail();
     }
@@ -119,6 +121,7 @@ export function approveEnrollment(request, invite, history, actorId, privateKey)
   for (const capability of invite.capabilities) {
     const candidates = team.routes[capability] || [];
     team.routes[capability] = invite.prefer ? [request.agent_id, ...candidates] : [...candidates, request.agent_id];
+    if (team.schema_version === 3 && !team.review_rules[capability]) team.review_rules[capability] = defaultReviewRules({ [capability]: [] })[capability];
   }
   return policyVersion(team, previous, actorId, privateKey, { invite_id: invite.invite_id, request_id: request.request_id });
 }

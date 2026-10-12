@@ -40,7 +40,7 @@ export async function startSetupServer({ manager = new SetupManager(), port = 0 
         const value = await manager.exclusive(() => manager.exportedBundle(url.searchParams.get('id'), url.searchParams.get('invite')));
         res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="${value.filename}"` }); res.end(value.content); return;
       }
-      const actions = { discovery: () => manager.beginDiscovery(body), admin: () => manager.createAdmin(body), import: () => manager.importBundle(body), existing: () => manager.importExisting(body), verify: () => manager.verifyMember(body), resume: () => manager.resume(body.id), issue: () => manager.issueBundle(body), approve: () => manager.approve(body), runner: () => manager.runner(body) };
+      const actions = { discovery: () => manager.beginDiscovery(body), admin: () => manager.createAdmin(body), import: () => manager.importBundle(body), existing: () => manager.importExisting(body), verify: () => manager.verifyMember(body), resume: () => manager.resume(body.id), issue: () => manager.issueBundle(body), approve: () => manager.approve(body), runner: () => manager.runner(body), 'review-rules': () => manager.setReviewRules(body) };
       const key = url.pathname.replace('/api/', ''); const action = Object.hasOwn(actions, key) ? actions[key] : null;
       if (req.method === 'POST' && url.pathname.startsWith('/api/') && action) return json(200, await manager.exclusive(action));
       return json(404, { error: '操作不存在。' });

@@ -102,8 +102,11 @@ switch (command) {
     if (command === 'list') task = await service.list();
     if (command === 'read') task = await service.read(args[0]);
     if (command === 'review') {
-      if (!['approved', 'changes_requested'].includes(args[1])) throw new Error('review task-id approved|changes_requested');
-      task = await service.report(args[0], { type: 'reviewed', decision: args[1] });
+      if (!['approved', 'changes_requested'].includes(args[1])) throw new Error('review task-id approved|changes_requested [R-<seq>] [feedback]');
+      const revision = /^R-([1-9][0-9]*)$/.exec(args[2] || '');
+      if (args[2]?.startsWith('R-') && (!revision || !Number.isSafeInteger(Number(revision[1])))) throw new Error('invalid review revision; use R-<seq> from the current notification');
+      const summary = args.slice(revision ? 3 : 2).join(' ');
+      task = await service.report(args[0], { type: 'reviewed', decision: args[1], ...(summary ? { summary } : {}) }, {}, undefined, revision ? Number(revision[1]) : undefined);
     }
     if (command === 'complete') task = await service.report(args[0], { type: 'completed' });
     if (command === 'reopen') task = await service.report(args[0], { type: 'reopened', summary: args.slice(1).join(' ') });
