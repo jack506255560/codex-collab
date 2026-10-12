@@ -36,12 +36,47 @@ function capabilities(value) {
   if (!Array.isArray(list) || !list.length || list.length > 16 || list.some((cap) => !idPattern.test(cap))) throw new SetupError('职责标签请使用英文、数字、下划线或连字符。');
   return [...new Set(list)];
 }
+function gitFailure(error) {
+  const detail = `${error?.stderr || ''}\n${error?.message || ''}`.toLowerCase();
+  if (error?.killed || error?.code === 'ETIMEDOUT' || /timed out|timeout/.test(detail)) {
+    return new SetupError('Git 访问远程仓库超时，请检查网络或代理后重试。');
+  }
+  if (/authentication failed|could not read username|permission denied|access denied|repository not found|403|401/.test(detail)) {
+    return new SetupError('无法访问远程仓库，请检查 GitHub 登录状态、仓库地址和读写权限。不要把 Token 或 Secret 填入向导。');
+  }
+  if (/could not resolve host|failed to connect|network is unreachable|connection refused|network failure/.test(detail)) {
+    return new SetupError('无法连接远程仓库，请检查网络或代理后重试。');
+  }
+  return new SetupError('Git 无法读取远程仓库，请检查 origin 地址、Git 权限和网络后重试。');
+}
+function shellQuote(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
 async function ensureRepo(path) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw new SetupError('请选择业务仓库的本机绝对路径。');
-  const repo = await realpath(path);
-  if (await git(repo, 'rev-parse', '--show-toplevel') !== repo) throw new SetupError('请选择 Git 仓库根目录。');
-  const remote = await git(repo, 'remote', 'get-url', 'origin');
-  if (!await git(repo, 'ls-remote', '--heads', 'origin', 'refs/heads/main')) throw new SetupError('无法读取 origin/main，请检查仓库和 Git 权限。');
+  let repo;
+  try { repo = await realpath(path); } catch { throw new SetupError('请选择存在的业务仓库目录。'); }
+  try {
+    if (await git(repo, 'rev-parse', '--show-toplevel') !== repo) throw new SetupError('请选择 Git 仓库根目录。');
+  } catch (error) {
+    if (error instanceof SetupError) throw error;
+    throw new SetupError('请选择 Git 仓库根目录。');
+  }
+  let remote;
+  try { remote = await git(repo, 'remote', 'get-url', 'origin'); }
+  catch (error) {
+    const detail = `${error?.stderr || ''}\n${error?.message || ''}`.toLowerCase();
+    if (/no such remote|does not appear to be a git repository/.test(detail)) throw new SetupError('该目录没有名为 origin 的远程仓库，请先配置 GitHub origin。');
+    throw gitFailure(error);
+  }
+  let main;
+  try { main = await git(repo, 'ls-remote', '--heads', 'origin', 'refs/heads/main'); }
+  catch (error) { throw gitFailure(error); }
+  if (!main) {
+    let heads;
+    try { heads = await git(repo, 'ls-remote', '--heads', 'origin'); }
+    catch (error) { throw gitFailure(error); }
+    if (!heads) throw new SetupError(`远程仓库为空，未找到 origin/main。请先在终端执行：\ngit -C ${shellQuote(repo)} push -u origin main`);
+    throw new SetupError(`远程仓库可访问，但没有 main 分支。请先将本地 main 推送到 origin：\ngit -C ${shellQuote(repo)} push -u origin main`);
+  }
   return { repo, remote };
 }
 function validateBundle(value) {

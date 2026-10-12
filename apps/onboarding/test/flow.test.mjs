@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -11,6 +12,48 @@ import { generateIdentity, digest, readPrivateJson } from '../../../packages/pee
 import { policyVersion, recordHash, validateHistory, invitationRecord, enrollmentRequest, approveEnrollment, validateEnrollment } from '../../../packages/peer/registry.mjs';
 import { buildTeamPolicy } from '../../../scripts/peer/onboarding.mjs';
 import { encryptBundle, decryptBundle } from '../bundle.mjs';
+
+function initLocalRepo(path, branch = 'main') {
+  execFileSync('git', ['init', '-b', branch, path], { stdio: 'ignore' });
+  git(path, 'config', 'user.name', 'Test');
+  git(path, 'config', 'user.email', 'test@example.invalid');
+}
+
+test('onboarding explains empty, missing-main and missing-origin repositories', async () => {
+  const f = await fixture();
+  try {
+    const emptyRemote = join(f.root, 'empty-origin.git');
+    const emptyRepo = join(f.root, 'empty-repo');
+    execFileSync('git', ['init', '--bare', '--initial-branch=main', emptyRemote], { stdio: 'ignore' });
+    initLocalRepo(emptyRepo);
+    await writeFile(join(emptyRepo, 'test.sh'), 'set -eu\n');
+    git(emptyRepo, 'add', '.'); git(emptyRepo, 'commit', '-m', 'fixture'); git(emptyRepo, 'remote', 'add', 'origin', emptyRemote);
+    await assert.rejects(
+      f.manager.createAdmin({ repo: emptyRepo, agent_id: 'empty', capabilities: 'backend' }),
+      (error) => error.message.includes('远程仓库为空') && error.message.includes('push -u origin main'),
+    );
+
+    const otherBranchRemote = join(f.root, 'other-branch-origin.git');
+    const otherBranchRepo = join(f.root, 'other-branch-repo');
+    execFileSync('git', ['init', '--bare', '--initial-branch=develop', otherBranchRemote], { stdio: 'ignore' });
+    initLocalRepo(otherBranchRepo);
+    await writeFile(join(otherBranchRepo, 'test.sh'), 'set -eu\n');
+    git(otherBranchRepo, 'add', '.'); git(otherBranchRepo, 'commit', '-m', 'fixture');
+    git(otherBranchRepo, 'remote', 'add', 'origin', otherBranchRemote); git(otherBranchRepo, 'push', 'origin', 'HEAD:develop');
+    await assert.rejects(
+      f.manager.createAdmin({ repo: otherBranchRepo, agent_id: 'develop', capabilities: 'backend' }),
+      (error) => error.message.includes('没有 main 分支') && error.message.includes('push -u origin main'),
+    );
+
+    const noOriginRepo = join(f.root, 'no-origin-repo');
+    execFileSync('git', ['clone', f.remote, noOriginRepo], { stdio: 'ignore' });
+    git(noOriginRepo, 'remote', 'remove', 'origin');
+    await assert.rejects(
+      f.manager.createAdmin({ repo: noOriginRepo, agent_id: 'no-origin', capabilities: 'backend' }),
+      /没有名为 origin 的远程仓库/,
+    );
+  } finally { await f.cleanup(); }
+});
 
 test('signed enrollment rejects tampering, forged claims, expiry, unauthorized policies and package reuse', () => {
   const alice = generateIdentity(), bob = generateIdentity(), claim = generateIdentity();
