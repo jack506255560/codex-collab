@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codex-collab:peer-inbox-event:v1",
+  "title": "Codex Collab Signed Natural Language Inbox Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "seq",
+    "event_id",
+    "actor_id",
+    "occurred_at",
+    "idempotency_key",
+    "team_hash",
+    "signature",
+    "type"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^N-[A-F0-9]{32}$"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9-]{36}$"
+    },
+    "actor_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "\\S"
+    },
+    "team_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "enum": [
+        "received",
+        "clarified",
+        "replied",
+        "task_created",
+        "answered"
+      ]
+    },
+    "spec_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    },
+    "message_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "\\S"
+    },
+    "response": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^T-[A-F0-9]{32}$"
+    },
+    "task_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": {
+          "const": "received"
+        }
+      },
+      "required": [
+        "spec_hash"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "required": [
+              "message_key"
+            ]
+          },
+          {
+            "required": [
+              "response"
+            ]
+          },
+          {
+            "required": [
+              "task_hash"
+            ]
+          },
+          {
+            "required": [
+              "task_id"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "clarified"
+        }
+      },
+      "required": [
+        "response"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "required": [
+              "message_key"
+            ]
+          },
+          {
+            "required": [
+              "spec_hash"
+            ]
+          },
+          {
+            "required": [
+              "task_hash"
+            ]
+          },
+          {
+            "required": [
+              "task_id"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "replied"
+        }
+      },
+      "required": [
+        "content",
+        "message_key"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "response"
+            ]
+          },
+          {
+            "required": [
+              "spec_hash"
+            ]
+          },
+          {
+            "required": [
+              "task_hash"
+            ]
+          },
+          {
+            "required": [
+              "task_id"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "task_created"
+        }
+      },
+      "required": [
+        "task_id",
+        "task_hash",
+        "response"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "required": [
+              "message_key"
+            ]
+          },
+          {
+            "required": [
+              "spec_hash"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "answered"
+        }
+      },
+      "required": [
+        "response"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "required": [
+              "message_key"
+            ]
+          },
+          {
+            "required": [
+              "spec_hash"
+            ]
+          },
+          {
+            "required": [
+              "task_hash"
+            ]
+          },
+          {
+            "required": [
+              "task_id"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "$comment": "Runtime also verifies Ed25519 signatures and historical team hash, receiving-agent authorship, exact sequence, unique IDs and idempotency keys, nondecreasing UTC timestamps, signed spec digest and allowed transitions. received opens pending; clarified waits for a reply; replied returns to pending; task_created and answered resolve pending. A task_created event and its desktop_poll task commit atomically; runtime validates the exact task digest, deterministic task ID, original group, creator and creation key. Replies are scoped to the same bot, group and sender."
+}

@@ -82,6 +82,19 @@ export class DesktopExecutor {
     }
     Object.assign(job, { source_commit: source, branch, worktree, status: 'prepared' });
   }
+  teamContext() {
+    return { default_route: this.service.team.default_route, routes: this.service.team.routes,
+      default_workflow: this.config.wecom?.default_workflow || [this.service.team.default_route],
+      agents: Object.fromEntries(Object.entries(this.service.team.agents).map(([id, agent]) => [id, { role: agent.role, capabilities: agent.capabilities }])) };
+  }
+  async resolveRequest(threadId, requestId, expectedSeq, resolution) {
+    return this.private.locked(async (state) => {
+      this.checkBinding(state, threadId);
+      const request = (await this.service.listRequests()).find((item) => item.spec.id === requestId);
+      if (!request || !this.config.wecom?.chat_ids?.includes(request.spec.chat_id)) throw new Denied("request is outside this bot's configured groups");
+      return this.service.resolveRequest(requestId, expectedSeq, resolution, { defaultWorkflow: this.config.wecom?.default_workflow });
+    });
+  }
   async poll(threadId) {
     return this.private.locked(async (state) => {
       this.checkBinding(state, threadId);
@@ -96,6 +109,14 @@ export class DesktopExecutor {
         if (!current || current.state.status !== 'running' || current.state.assignee !== this.service.agentId || current.state.epoch !== job.token.epoch || this.service.store.clock() >= Date.parse(current.state.lease.expires_at)) job.status = 'superseded';
       }
       if (!task) {
+        const requests = await this.service.pendingRequests({ chatIds: this.config.wecom?.chat_ids || [] });
+        if (requests.length) {
+          await this.private.write(state);
+          return { agent_id: this.service.agentId, job: null, notify: true, team_context: this.teamContext(),
+            requests: requests.map((request) => ({ id: request.spec.id, expected_seq: request.state.seq, chat_id: request.spec.chat_id,
+              messages: [{ kind: 'request', content: request.spec.content }, ...request.events.filter((event) => ['clarified', 'replied'].includes(event.type)).map((event) => ({ kind: event.type === 'clarified' ? 'question' : 'reply', content: event.response || event.content }))] })),
+            instructions: 'Interpret requests in this bound conversation. Use resolve_desktop_request to create a structured task, ask a clarification, or answer without creating work. Then poll again; job=null alone does not mean idle.' };
+        }
         const next = await this.service.nextJob({ executionMode: 'desktop_poll' });
         if (!next) { await this.private.write(state); return { agent_id: this.service.agentId, job: null, notify: false }; }
         try { task = await this.service.claim(next.spec.id, `desktop-claim:${this.service.agentId}:${next.spec.id}:${next.state.epoch + 1}`, { executionMode: 'desktop_poll' }); }

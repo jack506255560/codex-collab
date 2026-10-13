@@ -143,7 +143,16 @@ export PATH="$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node
 
 ### C. 企业微信群自动分配
 
-群中由有权限的真人向自己的机器人发送：
+网页向导使用 `desktop_poll`，支持有权限的真人向自己的机器人用自然语言描述需求：
+
+```text
+@Alice 给登录页增加密码显示切换，保持现有登录行为。
+你负责前端，Bob 补接口和测试，完成后在群里告诉我。
+```
+
+Runner 保存签名需求，已有 Codex 对话轮询后理解并调用 `resolve_desktop_request` 创建任务、追问或回答。分工必须匹配已配置路由；需求不清时直接 @原机器人补充，多条追问时附 N-ID。确认后沿用原租约、候补和审核流程；详见 [自然语言入口与升级](desktop-poll.md#已有项目启用自然语言入口)。本入口不支持 SDK 自动模式，SDK 仍使用明确命令。
+
+以下明确命令同时兼容两种模式；审核/完成由真人执行，自然语言文字不代替它们：
 
 ```text
 @机器人 协作 创建 [frontend>backend] 增加登录页 | npm test 通过;登录页可访问

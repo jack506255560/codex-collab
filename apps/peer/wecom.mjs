@@ -27,7 +27,11 @@ export async function dispatchPeerWecom(frame, { service, config, reply }) {
   if (config.commands_enabled === false) return false;
   const body = frame?.body;
   if (body?.chattype !== 'group' || body.msgtype !== 'text' || !config.chat_ids.includes(body.chatid) || !body.msgid) return false;
-  const command = parsePeerCommand(body.text?.content); if (!command) return false;
+  if (config.bot_id && body.aibotid && body.aibotid !== config.bot_id) return false;
+  const raw = body.text?.content;
+  if (typeof raw !== 'string' || !raw.trim()) return false;
+  const command = parsePeerCommand(raw);
+  const content = raw.trim().replace(/^@[^\s@]{1,40}\s+/, '').trim();
   // Refresh policy before authorization so newly approved admins/owners are visible.
   if (service.store.registryRoot) await service.list();
   const sender = body.from?.userid;
@@ -36,12 +40,29 @@ export async function dispatchPeerWecom(frame, { service, config, reply }) {
   // Shared owners do not merge agent roles: the receiving bot selects its signer.
   // Admins may dispatch/query via a member bot. Review mutations must be signed by
   // the human reviewer's own identity, never by impersonating another member.
-  if (!owner && !(admin && ['create', 'status'].includes(command.action))) return false;
+  if (!owner && !(admin && ['create', 'status', 'natural'].includes(command?.action || 'natural'))) return false;
   const key = `wecom:${body.chatid}:${body.msgid}`;
   let text;
   try {
     let task;
-    if (command.action === 'create') {
+    if (!command) {
+      // The authenticated smart-bot callback is addressed to this bot. Do not
+      // infer bot mentions from display names; validate aibotid when supplied.
+      if (/^协作(?:\s|$)/.test(content)) {
+        await reply(frame, '这条协作命令格式不完整，请使用通知中的完整命令；创建任务也可以直接 @我描述需求。'); return true;
+      }
+      if (!content || content.length > 4000) {
+        await reply(frame, '请用不超过 4000 字的文字描述需求。'); return true;
+      }
+      if (config.execution_mode !== 'desktop_poll') {
+        await reply(frame, '自然语言任务需要绑定已有 Codex 对话，并启用 desktop_poll 轮询。'); return true;
+      }
+      const request = await service.receiveRequest({ chatId: body.chatid, messageId: body.msgid, senderId: sender, content, allowAdmin: config.allow_admin_commands === true });
+      text = request.state.task_id ? `该消息已创建任务 ${request.state.task_id}，不会重复创建。`
+        : request.state.status === 'answered' ? '这条消息已处理。'
+        : request.state.status === 'clarification' ? `需求 ${request.spec.id} 等待你补充说明，请查看群里的追问。`
+        : `已收到你的需求（${request.spec.id}）；等待绑定的 Codex 对话轮询理解和处理。`;
+    } else if (command.action === 'create') {
       task = await service.create({ ...command, workflow: command.workflow || (config.default_workflow ? config.default_workflow : undefined), id: `T-${digest(key).slice(0, 32).toUpperCase()}`, chatId: body.chatid, execution_mode: config.execution_mode === 'desktop_poll' ? 'desktop_poll' : 'automatic' }, key);
       text = task.spec.execution_mode === 'desktop_poll'
         ? `任务 ${task.spec.id} 已创建；按 ${task.spec.workflow.join(' → ')} 等待绑定的 Codex 桌面对话轮询认领。`
@@ -69,7 +90,7 @@ export async function dispatchPeerWecom(frame, { service, config, reply }) {
       if (command.action === 'reopen') task = await service.report(command.id, { type: 'reopened', summary: command.summary }, {}, key);
       text = `任务 ${task.spec.id}：${task.state.status}；负责人 ${task.state.assignee || '待认领'}；步骤 ${task.state.stage + 1}/${task.spec.workflow.length}；轮次 ${task.state.epoch}；版本 R-${task.state.seq}。`;
     }
-  } catch { text = '协作操作未成功：请核对任务所属群、本人权限和本机 Git 连接。'; }
+  } catch (error) { text = error.code === 'AMBIGUOUS_INBOX_REPLY' ? '有多条需求等待补充，请 @我回复时带上对应的 N-需求ID。' : '协作操作未成功：请核对任务所属群、本人权限和本机 Git 连接。'; }
   await reply(frame, text); return true;
 }
 
@@ -152,7 +173,13 @@ export function startPeerWecom({ service, config, clientFactory = (options) => n
   };
   // MCP and Runner use independent processes. Relay committed events from either
   // process; never rely on receiving another bot's group messages for scheduling.
-  const relay = new PeerNotificationRelay(service, send);
+  const sendInbox = async (request, event) => {
+    if (!config.chat_ids.includes(request.spec.chat_id)) return;
+    const label = event.type === 'clarified' ? '需要补充说明' : event.type === 'task_created' ? '任务与分工确认' : '回复';
+    const content = `[Codex Collab · ${service.agentId}] ${request.spec.id} ${label}\n${event.type === 'task_created' ? `任务：${event.task_id}\n` : ''}${notificationText(event.response)}${event.type === 'clarified' ? '\n请 @这个机器人直接补充；有多条追问时附上需求 N-ID。' : ''}`;
+    assertReceipt(await client.sendMessage(request.spec.chat_id, { msgtype: 'markdown', markdown: { content } }));
+  };
+  const relay = new PeerNotificationRelay(service, send, sendInbox);
   service.notify = () => relay.poll();
   client.connect(); return { close: () => { setHealth('disconnected'); client.disconnect(); }, poll: () => relay.poll(), health: { snapshot: () => health, flush: () => pendingHealth } };
 }
@@ -162,8 +189,8 @@ export function assertReceipt(frame) {
 }
 
 export class PeerNotificationRelay {
-  constructor(service, send) {
-    this.service = service; this.send = send;
+  constructor(service, send, sendInbox = async () => {}) {
+    this.service = service; this.send = send; this.sendInbox = sendInbox;
     this.path = join(service.store.dataDir, 'wecom-notifications.json');
     this.cursors = null; this.pending = Promise.resolve();
   }
@@ -189,6 +216,19 @@ export class PeerNotificationRelay {
         const temp = `${this.path}.${process.pid}.tmp`;
         await writeFile(temp, JSON.stringify(this.cursors) + '\n', { mode: 0o600 });
         await rename(temp, this.path);
+      }
+    }
+    if (typeof this.service.listRequests === 'function') {
+      for (const request of await this.service.listRequests()) {
+        if (request.spec.target_agent !== this.service.agentId) continue;
+        const cursor = `inbox:${request.spec.id}`;
+        for (const event of request.events.slice(this.cursors[cursor] || 0)) {
+          if (['clarified', 'answered', 'task_created'].includes(event.type)) await this.sendInbox(request, event);
+          this.cursors[cursor] = event.seq;
+          const temp = `${this.path}.${process.pid}.tmp`;
+          await writeFile(temp, JSON.stringify(this.cursors) + '\n', { mode: 0o600 });
+          await rename(temp, this.path);
+        }
       }
     }
   }

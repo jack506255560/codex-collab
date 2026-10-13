@@ -120,6 +120,81 @@ test('group task → bound Alice stage → notification → bound Bob exact SHA 
   } finally { await f.cleanup(); }
 });
 
+test('natural group request → bound conversation interpretation → Alice implementation → Bob tests → review', async () => {
+  const f = await fixture();
+  try {
+    await bind(f); const { alice, bob } = f.peers;
+    alice.config.wecom = { bot_id: 'test-alice-bot', secret: 'fixture-only', chat_ids: ['group'], execution_mode: 'desktop_poll', default_workflow: ['frontend', 'backend'] };
+    const frame = { body: { chattype: 'group', chatid: 'group', aibotid: 'test-alice-bot', msgtype: 'text', msgid: 'natural-create', from: { userid: 'owner' }, text: { content: '@Alice 给 greet.sh 增加 --upper，默认和姓名参数照旧。你负责实现，@Bob 补测试，完成后在群里告诉我。' } } };
+    const replies = [];
+    const dispatch = () => dispatchPeerWecom(frame, { service: alice.service, config: alice.config.wecom, reply: async (_frame, text) => replies.push(text) });
+    assert.equal(await dispatch(), true); await dispatch();
+    assert.match(replies[0], /等待绑定的 Codex 对话轮询/);
+    assert.equal((await alice.service.list()).length, 0, 'intake does not guess a task before the bound chat interprets it');
+    assert.equal((await alice.service.listRequests()).length, 1, 'duplicate delivery does not duplicate requests');
+    const poll = await alice.desktop.poll(threads.alice);
+    assert.equal(poll.job, null); assert.equal(poll.notify, true);
+    assert.deepEqual(poll.team_context.routes.backend, ['bob', 'alice']);
+    assert.match(poll.requests[0].messages[0].content, /@Bob/);
+    const request = poll.requests[0];
+    const interpretation = { action: 'create_task', response: 'Alice 实现 --upper，Bob 补四种行为的测试，最后等待人工审核。', task: { title: '支持大写问候', description: 'Alice 修改 greet.sh 支持 --upper；Bob 修改 test.sh。', acceptance: ['默认和姓名参数保持原行为', '--upper 默认和姓名输出大写', 'sh test.sh 通过'], workflow: ['frontend', 'backend'] } };
+    await assert.rejects(alice.desktop.resolveRequest(threads.bob, request.id, request.expected_seq, interpretation), /not the bound/);
+    const groups = alice.config.wecom.chat_ids; alice.config.wecom.chat_ids = ['other-group'];
+    assert.equal((await alice.desktop.poll(threads.alice)).notify, false);
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, request.id, request.expected_seq, interpretation), /configured groups/);
+    alice.config.wecom.chat_ids = groups;
+    const resolved = await alice.desktop.resolveRequest(threads.alice, request.id, request.expected_seq, interpretation);
+    assert.equal(resolved.request.state.status, 'task_created');
+    const task = resolved.task;
+    await dispatch(); assert.match(replies.at(-1), /不会重复创建/);
+    assert.equal((await alice.service.list()).length, 1);
+    const first = await alice.desktop.poll(threads.alice);
+    assert.equal(first.job.thread_id, threads.alice);
+    assert.equal(first.task.spec.description, interpretation.task.description);
+    await alice.service.receiveRequest({ chatId: 'group', messageId: 'status-while-working', senderId: 'owner', content: '这个任务进度怎么样？' });
+    const active = await alice.desktop.poll(threads.alice);
+    assert.equal(active.job.task_id, first.job.task_id); assert.equal(active.requests, undefined, 'active leased work takes priority');
+    await alice.desktop.renew(threads.alice, task.spec.id);
+    const aliceCommit = await commit(first.job, 'greet.sh', '#!/bin/sh\nif [ "${1:-}" = --upper ]; then shift; printf "hello, %s\\n" "${1:-world}" | tr "[:lower:]" "[:upper:]"; else printf "hello, %s\\n" "${1:-world}"; fi\n');
+    const handoff = await alice.desktop.finish(threads.alice, task.spec.id, '大写选项已实现；Bob 请覆盖默认、姓名、大写默认、大写姓名四个用例。');
+    assert.equal(handoff.state.status, 'waiting');
+    const pending = await alice.desktop.poll(threads.alice);
+    await alice.desktop.resolveRequest(threads.alice, pending.requests[0].id, pending.requests[0].expected_seq, { action: 'answer', response: '实现已完成，等待 Bob 补测试。' });
+    assert.equal((await alice.service.list()).length, 1, 'informational answers do not create tasks');
+    const second = await bob.desktop.poll(threads.bob);
+    assert.equal(second.job.thread_id, threads.bob); assert.equal(second.job.source_commit, aliceCommit);
+    await commit(second.job, 'test.sh', '#!/bin/sh\nset -eu\n[ "$(sh greet.sh)" = "hello, world" ]\n[ "$(sh greet.sh Alice)" = "hello, Alice" ]\n[ "$(sh greet.sh --upper)" = "HELLO, WORLD" ]\n[ "$(sh greet.sh --upper Alice)" = "HELLO, ALICE" ]\n');
+    const review = await bob.desktop.finish(threads.bob, task.spec.id, '四种行为测试通过，等待真人审核。');
+    assert.equal(review.state.status, 'review');
+    const sent = []; const inboxSent = [];
+    for (const id of ['alice', 'bob']) await new PeerNotificationRelay(f.peers[id].service, async (item, type) => sent.push({ id, type, text: formatPeerNotification(item, type, id, f.peers[id].team) }), async (_request, event) => inboxSent.push(event)).poll();
+    assert.ok(inboxSent.some((event) => event.type === 'task_created' && /Bob/.test(event.response)));
+    assert.ok(sent.some((event) => event.type === 'handoff' && /优先 bob/.test(event.text)));
+    assert.ok(sent.some((event) => event.type === 'review_requested' && /等待真人审核/.test(event.text)));
+    assert.equal(git(f.output.shared_origin, 'rev-parse', 'main'), git(f.seed, 'rev-parse', 'main'));
+    assert.equal(JSON.stringify(await alice.service.listRequests()).includes(threads.alice), false);
+  } finally { await f.cleanup(); }
+});
+
+test('bound chat receives clarification history and rejects stale interpretation', async () => {
+  const f = await fixture();
+  try {
+    await bind(f); const { alice } = f.peers;
+    alice.config.wecom = { bot_id: 'test-bot', secret: 'fixture-only', chat_ids: ['group'] };
+    const receive = (messageId, content) => alice.service.receiveRequest({ chatId: 'group', messageId, senderId: 'owner', content });
+    await receive('unclear', '把那个功能改一下');
+    const pending = (await alice.desktop.poll(threads.alice)).requests[0];
+    await alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, { action: 'clarify', response: '请说明文件和期望行为。' });
+    assert.equal((await alice.desktop.poll(threads.alice)).notify, false, 'waiting for a human reply does not keep notifying');
+    await receive('plain-reply', '给 greet.sh 增加 --upper，保持原来默认行为。');
+    const reply = (await alice.desktop.poll(threads.alice)).requests[0];
+    assert.equal(reply.id, pending.id); assert.deepEqual(reply.messages.map((m) => m.kind), ['request', 'question', 'reply']);
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, reply.id, pending.expected_seq, { action: 'answer', response: 'stale' }), /changed|pending|different content/);
+    await alice.desktop.resolveRequest(threads.alice, reply.id, reply.expected_seq, { action: 'create_task', task: { title: '支持大写', acceptance: ['默认行为不变', '支持 --upper'] } });
+    assert.equal((await alice.desktop.poll(threads.alice)).job.thread_id, threads.alice);
+  } finally { await f.cleanup(); }
+});
+
 test('desktop lease expiry permits fallback and fences late renewal/publication', async () => {
   const f = await fixture();
   try {
@@ -202,6 +277,9 @@ test('desktop project attachment preserves unrelated TOML, backs up private sett
 test('real MCP stdio advertises polling tools, requires binding and returns quiet no-job without SDK', async () => {
   const f = await fixture(); let child;
   try {
+    const config = JSON.parse(await readFile(f.output.configs.alice, 'utf8'));
+    config.wecom = { bot_id: 'fixture-bot', secret: 'fixture-only', chat_ids: ['group'], commands_enabled: true, execution_mode: 'desktop_poll' };
+    await writeFile(f.output.configs.alice, JSON.stringify(config), { mode: 0o600 });
     child = spawn(process.execPath, [join(tools, 'apps/peer/mcp-main.mjs'), f.output.configs.alice], { stdio: ['pipe', 'pipe', 'pipe'] });
     let buffer = ''; const waiting = new Map(); let seq = 0;
     child.stdout.on('data', (chunk) => { buffer += chunk; let n; while ((n = buffer.indexOf('\n')) >= 0) { const line = buffer.slice(0, n); buffer = buffer.slice(n + 1); const message = JSON.parse(line); waiting.get(message.id)?.(message); } });
@@ -213,13 +291,21 @@ test('real MCP stdio advertises polling tools, requires binding and returns quie
     await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'desktop-test', version: '1' } });
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
     const listed = await request('tools/list', {});
-    for (const name of ['bind_desktop_thread', 'poll_desktop_task', 'renew_desktop_task', 'finish_desktop_task', 'fail_desktop_task']) assert.ok(listed.result.tools.some((t) => t.name === name));
+    for (const name of ['bind_desktop_thread', 'poll_desktop_task', 'resolve_desktop_request', 'renew_desktop_task', 'finish_desktop_task', 'fail_desktop_task']) assert.ok(listed.result.tools.some((t) => t.name === name));
     const call = (name, args) => request('tools/call', { name, arguments: args });
     assert.equal((await call('poll_desktop_task', { thread_id: threads.alice })).result.isError, true);
     assert.equal((await call('bind_desktop_thread', { thread_id: threads.alice })).result.isError, undefined);
     const result = await call('poll_desktop_task', { thread_id: threads.alice });
     assert.equal(JSON.parse(result.result.content[0].text).job, null);
     assert.equal(listed.result.tools.some((t) => /approve|complete/.test(t.name)), false);
+    await f.peers.alice.service.receiveRequest({ chatId: 'group', messageId: 'stdio-intake', senderId: 'owner', content: '给 greet.sh 增加 --upper。' });
+    const pending = JSON.parse((await call('poll_desktop_task', { thread_id: threads.alice })).result.content[0].text).requests[0];
+    const args = { thread_id: threads.alice, request_id: pending.id, expected_seq: pending.expected_seq, action: 'create_task', task: { title: 'upper', acceptance: ['supports --upper'], workflow: ['frontend'] } };
+    assert.equal((await call('resolve_desktop_request', { ...args, thread_id: threads.bob })).result.isError, true);
+    assert.equal((await call('resolve_desktop_request', { ...args, approve: true })).result.isError, true, 'MCP rejects unrecognized fields');
+    assert.equal((await call('resolve_desktop_request', args)).result.isError, undefined);
+    const started = JSON.parse((await call('poll_desktop_task', { thread_id: threads.alice })).result.content[0].text);
+    assert.equal(started.job.thread_id, threads.alice); assert.equal(started.task.spec.title, 'upper');
   } finally {
     if (child && child.exitCode === null) { const ended = new Promise((resolve) => child.once('exit', resolve)); child.kill('SIGTERM'); await ended; }
     await f.cleanup();

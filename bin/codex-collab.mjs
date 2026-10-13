@@ -17,6 +17,7 @@ Usage:
   codex-collab
   codex-collab identity create <agent-id> [--dir /absolute/private/directory]
   codex-collab wecom discover
+  codex-collab refresh-project /absolute/private-peer.json
   codex-collab <doctor|start|stop|status|list|read|review|complete|reopen|...> /abs/private-peer.json [args]
 
 setup opens the local web wizard. --terminal keeps the legacy terminal workflow. Never pass a bot Secret as a command argument.`);
@@ -65,6 +66,13 @@ async function main() {
     console.log(`Agent ID: ${files.agent_id}`);
     console.log(`Private identity (keep local): ${files.private_key_file}`);
     console.log(`Public key (share with team admin): ${files.public_key_file}`);
+    return;
+  }
+
+  if (args[0] === 'refresh-project') {
+    if (args.length !== 2) throw new Error('usage: codex-collab refresh-project /absolute/private-peer.json');
+    const { refreshProject } = await import('../scripts/peer/refresh-project.mjs');
+    console.log(JSON.stringify(await refreshProject({ configPath: args[1] }), null, 2));
     return;
   }
 

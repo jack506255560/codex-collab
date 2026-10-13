@@ -77,7 +77,7 @@ cat "$root/bob-bind-prompt.txt"
 
 提示词要求目标对话：确认 MCP 身份 → 获取当前真实 thread ID → `bind_desktop_thread` → 用应用 automation 工具在**这个已有对话**设置周期 heartbeat → 立即只读/无任务检查。不能仅凭项目目录猜对话 ID；若应用上下文/当前 shell 未暴露 ID，让用户提供目标对话 ID/链接，不读取或修改应用私有数据库。
 
-每个 heartbeat 保存的提示词须含该身份、真实 thread_id、skill 路径；每次 `get_identity`、`poll_desktop_task`。无任务保持安静，有任务在本对话完成当前阶段并交接。创建前查已有 automation，避免重复。默认尝试一分钟周期，只有工具接受且真实触发后才算启用；否则说明限制。应用工具不可用时只完成绑定，不能声称已自动轮询。
+每个 heartbeat 保存的提示词须含该身份、真实 thread_id、skill 路径；每次 `get_identity`、`poll_desktop_task`。只有 `job=null` 且 `requests` 为空时保持安静；有需求时先理解并调用 `resolve_desktop_request` 创建任务、追问或回答，有任务时在本对话完成当前阶段并交接。创建前查已有 automation，避免重复。默认尝试一分钟周期，只有工具接受且真实触发后才算启用；否则说明限制。应用工具不可用时只完成绑定，不能声称已自动轮询。
 
 绑定和 app heartbeat 是两件事：MCP 返回 `automation_created=false`；只能由应用工具完成定时设置。桌面绑定 ID/执行路径/token 只存本机 `desktop-state.json`，不进 Git。
 
@@ -106,14 +106,16 @@ node scripts/peer/cli.mjs status "$root/bob-peer.json"
 所有绑定/heartbeat 就绪后，在群里选择真实 Alice @，发**新任务**：
 
 ```text
-@Alice 协作 创建 [frontend>backend] Alice阶段仅为greet.sh增加--upper并保留默认和姓名参数，Bob阶段仅扩展test.sh覆盖四种新旧行为 | sh greet.sh输出hello, world;sh greet.sh Alice输出hello, Alice;sh greet.sh --upper输出HELLO, WORLD;sh greet.sh --upper Alice输出HELLO, ALICE;sh test.sh通过并覆盖四种行为
+@Alice 给 greet.sh 增加 --upper 选项，默认和姓名参数的行为保持不变。
+你只修改 greet.sh，Bob 接着扩展 test.sh，覆盖默认、姓名、大写默认、大写姓名四种行为。
+sh test.sh 要通过，完成后在群里发总结。
 ```
 
-注意工作流语法有方括号 `[frontend>backend]`。省略时只有默认阶段，不会凭任务标题自动增加 Bob 阶段。
+不用填写工作流语法、分隔符或任务 ID。先配置 Alice 的 frontend 职责和 Bob 的 backend 职责；绑定对话根据团队路由解释这条消息，把职责与验收保存在结构化任务中。没有对应同事或分工不清时先在群里追问；不能只凭显示名猜测分配。旧 `协作 创建 [frontend>backend] ... | ...` 命令仍可直接创建任务。
 
 验收要看到同一个新任务 ID：
 
-1. 群回复“等待绑定的 Codex 桌面对话轮询认领”，不是“后台 SDK 已开始”。
+1. 群先回复“已收到你的需求”，给出 `N-需求ID`；下一次 Alice 对话轮询后，群里收到任务与分工确认及 `T-任务ID`。从此检查同一个 T-ID。
 2. 指定 Alice 对话出现任务 ID、当前阶段和实际修改/测试记录；Alice Bot 发 claimed。
 3. Alice `finish_desktop_task` 固定验证通过并 push；群里给出结果、SHA、测试。v3 默认先等待 Alice 本人审核，通过后才显示下一阶段优先 Bob；v2 或关闭中间审核时直接交接。
 4. 指定 Bob 对话从 Alice 的准确 SHA 执行；Bob Bot 发 claimed、review_requested，并给出实际审核人与版本号。
@@ -131,13 +133,35 @@ node scripts/peer/cli.mjs status "$root/bob-peer.json"
 
 示例 `R-7` 替换为最新通知版本；v2 任务仍兼容省略版本号的旧命令。本页旧夹具中没有群命令身份的 Bob 由 Alice 管理员审核；新向导中用相同本人账号验证的 Bob 默认通过 Bob 机器人审核，按当前通知操作。原生 @ 提醒需实群确认；审核与 Git 接力不依赖原生 @。
 
+## 已有项目启用自然语言入口
+
+已有绑定不需要重新创建身份。先处理正在执行的任务，再对每个 Agent 用其**项目 MCP 实际使用的私有配置路径**操作：
+
+```sh
+npm install --global xuym-codex-collab@0.4.0
+codex-collab stop /absolute/private-peer.json
+codex-collab refresh-project /absolute/private-peer.json
+codex-collab start /absolute/private-peer.json
+```
+
+自然语言入口和 `refresh-project` 从 `0.4.0` 开始提供。从源码测试时，可将 `codex-collab` 替换为 `node /absolute/codex-collab/bin/codex-collab.mjs`。
+
+`refresh-project` 更新可识别的项目 MCP 和 Skill，保留 provider、其他 MCP、签名身份和本机对话绑定，生成私有备份，并返回 `binding_prompt` 文件路径。重新加载该项目 MCP，把这个文件里的启用指令发送到**原绑定对话**，让它更新原协作 heartbeat 的提示词，再立即轮询一次。升级命令本身不操作应用 heartbeat。
+
+网页工作台中继续检查/导入已有配置也会刷新可识别的安装；随后重新复制启用指令到原对话。定制 Skill、MCP、已提交的项目配置或其他身份配置不会被覆盖，提示手动合并后再继续。
+
+新一次群消息到达后，Runner 先把需求保存到业务仓库 `agent-collab` 的 `.agent-collab/peer/inbox/N-ID/`，使用签名与消息 ID 去重。MCP 轮询返回原文、追问/回复历史和团队职责，由绑定对话理解；任务与解读结果在同一次 Git 提交中发布。原始群需求和处理结果由团队共享，完整私有 Codex 对话和绑定 ID 不写入 Git。
+
+需求不清时机器人会追问：只有一条待补充需求，可直接 @它回复；多条时带上对应 N-ID。澄清等待中不产生执行任务；状态问题使用回答，不创建新任务。自然语言“通过／完成”只作为请求文字处理，审核、完成仍由真人发明确命令。运行中的任务优先恢复，新的需求会等活跃阶段结束后处理。响应时间取决于 heartbeat 实际轮询周期、对话是否可用和 Git 同步。
+
 ## MCP 与运行约束
 
 | 工具 | 作用 |
 | --- | --- |
 | get_identity | 核对身份与模式 |
 | bind_desktop_thread / desktop_status | 本机绑定与检查；不创建 app automation |
-| poll_desktop_task | 原子认领/恢复一项任务，返回隔离工作树或 job=null |
+| poll_desktop_task | 恢复活跃任务；否则返回待理解 requests，或原子认领任务；两者都无时 notify=false |
+| resolve_desktop_request | 绑定对话按最新 expected_seq 创建结构化任务、追问或回答；不批准、完成或取消任务 |
 | renew_desktop_task | 活跃执行时显式续租 |
 | finish_desktop_task | 验证已提交代码、跑固定测试、push、发布下一阶段或待审核 |
 | fail_desktop_task | 简洁脱敏失败；候补接力；保留工作树 |

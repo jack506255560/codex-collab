@@ -4,10 +4,11 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { generateIdentity, validateTeam } from '../config.mjs';
+import { digest, generateIdentity, validateTeam } from '../config.mjs';
 import { PeerGitStore } from '../store.mjs';
 import { PeerService } from '../service.mjs';
 import { Conflict, reducePeerTask } from '../protocol.mjs';
+import { inboxTaskId, reduceInbox, validateInboxSpec } from '../inbox.mjs';
 
 function git(cwd, ...args) {
   return execFileSync('git', ['-c', 'init.defaultBranch=main', '-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -28,7 +29,7 @@ async function fixture() {
   const team = {
     schema_version: 2, repo: 'fixture/repo', reviewer: 'alice', default_route: 'backend',
     agents: Object.fromEntries(Object.entries(ids).map(([id, identity]) => [id, {
-      role: id === 'alice' ? 'admin' : 'member', capabilities: ['backend'], max_concurrent_tasks: 1, public_key: identity.public_key,
+      role: id === 'alice' ? 'admin' : 'member', capabilities: ['backend'], max_concurrent_tasks: 1, public_key: identity.public_key, wecom_userid: `${id}-user`,
     }])),
     routes: { backend: ['bob', 'carol'] },
     policy: { claim_timeout_ms: 100, lease_ms: 300, clock_skew_ms: 10, max_attempts: 3 },
@@ -203,5 +204,110 @@ test('pinned reviewer may execute a routed stage without granting review authori
     const takeover = await bob.claim(task.spec.id);
     assert.equal(takeover.state.assignee, 'bob');
     assert.equal(takeover.state.epoch, 2);
+  } finally { await f.cleanup(); }
+});
+
+
+const groupRequest = (messageId, content = '增加大写选项，保留默认行为') => ({ chatId: 'group', messageId, senderId: 'alice-user', content });
+const interpretedTask = { action: 'create_task', task: { title: '大写问候', description: '实现选项并补回归测试', acceptance: ['默认行为不变', '大写选项通过测试'] } };
+
+test('natural inbox authenticates, signs and deduplicates exact messages', async () => {
+  const f = await fixture();
+  try {
+    const alice = await f.make('alice', 'alice-data'); const bob = await f.make('bob', 'bob-data');
+    await assert.rejects(alice.receiveRequest({ ...groupRequest('unauthorized'), senderId: 'outsider' }), /not authorized/);
+    await assert.rejects(bob.receiveRequest(groupRequest('admin')), /not authorized/);
+    const request = await alice.receiveRequest(groupRequest('natural'));
+    assert.equal(request.state.status, 'pending'); assert.equal(request.state.seq, 1);
+    assert.equal((await alice.receiveRequest(groupRequest('natural'))).spec.id, request.spec.id);
+    assert.equal((await alice.listRequests()).length, 1);
+    await assert.rejects(alice.receiveRequest(groupRequest('natural', '另一个需求')), /different content/);
+    assert.equal((await bob.receiveRequest({ ...groupRequest('admin'), allowAdmin: true })).spec.admin_dispatch, true);
+    const tampered = structuredClone(request.events); tampered[0].spec_hash = 'a'.repeat(64);
+    assert.throws(() => reduceInbox(request.spec, tampered, f.team), /signature/);
+    const { signature: receivedSignature, ...unsignedReceived } = request.events[0];
+    const wrongActor = bob.store.sign({ ...unsignedReceived, actor_id: 'bob' });
+    assert.throws(() => reduceInbox(request.spec, [wrongActor], f.team), /actor/);
+    const unknownField = alice.store.sign({ ...unsignedReceived, extra: 'invalid' });
+    assert.throws(() => reduceInbox(request.spec, [unknownField], f.team), /unsupported inbox event fields/);
+    const inherited = { ...request.spec, target_agent: 'toString' };
+    inherited.id = `N-${digest([inherited.target_agent, inherited.message_key]).slice(0, 32).toUpperCase()}`;
+    assert.throws(() => validateInboxSpec(inherited, f.team), /invalid natural-language/);
+    for (const changes of [{ content: ' ' }, { content: 'x'.repeat(4001) }, { unexpected: true }, { allowAdmin: 'true' }]) {
+      await assert.rejects(alice.receiveRequest({ ...groupRequest('invalid'), ...changes }), /invalid group request/);
+    }
+  } finally { await f.cleanup(); }
+});
+
+test('racing natural interpretations atomically publish one deterministic task and replay accepted workflow', async () => {
+  const f = await fixture();
+  try {
+    const alice = await f.make('alice', 'alice-data'); const other = await f.make('alice', 'alice-other');
+    const request = await alice.receiveRequest(groupRequest('race-natural'));
+    const results = await Promise.all([alice, other].map((service) => service.resolveRequest(request.spec.id, 1, interpretedTask)));
+    assert.equal(results[0].task.spec.id, inboxTaskId(request.spec.id));
+    assert.equal(results[0].task.spec.id, results[1].task.spec.id);
+    assert.equal((await alice.list()).length, 1);
+    assert.equal(results[0].request.state.seq, 2); assert.equal(results[1].request.state.seq, 2);
+    const changed = git(alice.store.checkout, 'diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD').split('\n');
+    assert.equal(changed.length, 3);
+    assert.ok(changed.some((path) => path.includes(`/inbox/${request.spec.id}/events/`)));
+    assert.ok(changed.some((path) => path.includes(`/tasks/${results[0].task.spec.id}/spec.json`)));
+    const retried = await alice.resolveRequest(request.spec.id, 1, interpretedTask, { defaultWorkflow: ['backend', 'backend'] });
+    assert.deepEqual(retried.task.spec.workflow, ['backend']);
+    await assert.rejects(alice.resolveRequest(request.spec.id, 1, { ...interpretedTask, task: { ...interpretedTask.task, title: 'changed' } }), /different task/);
+    await assert.rejects(alice.resolveRequest(request.spec.id, 1, { action: 'answer', response: 'changed' }), /different content/);
+    await assert.rejects(alice.resolveRequest(request.spec.id, 2, interpretedTask), /no longer pending/);
+    assert.equal((await alice.pendingRequests()).length, 0);
+    const persisted = git(alice.store.checkout, 'show', 'HEAD:.agent-collab/peer/inbox/' + request.spec.id + '/spec.json');
+    assert.doesNotMatch(persisted, /private_key|thread_id|data_dir/);
+  } finally { await f.cleanup(); }
+});
+
+test('clarification replies stay scoped to sender, group and bot; ambiguous replies require the N-ID', async () => {
+  const f = await fixture();
+  try {
+    const alice = await f.make('alice', 'alice-data'); const bob = await f.make('bob', 'bob-data');
+    const adminRequest = { ...groupRequest('clarify-admin'), allowAdmin: true };
+    const first = await bob.receiveRequest(adminRequest);
+    const second = await bob.receiveRequest({ ...adminRequest, messageId: 'clarify-second' });
+    for (const request of [first, second]) await bob.resolveRequest(request.spec.id, 1, { action: 'clarify', response: '需要修改哪个文件？' });
+    await assert.rejects(bob.receiveRequest({ ...adminRequest, messageId: 'ambiguous', content: 'greet.sh' }), (error) => error.code === 'AMBIGUOUS_INBOX_REPLY');
+    const otherGroup = await bob.receiveRequest({ ...adminRequest, chatId: 'other-group', messageId: 'other-group' });
+    assert.notEqual(otherGroup.spec.id, first.spec.id);
+    const ownerRequest = await bob.receiveRequest({ ...adminRequest, senderId: 'bob-user', messageId: 'own-request' });
+    assert.notEqual(ownerRequest.spec.id, first.spec.id);
+    const otherBot = await alice.receiveRequest(groupRequest('other-bot'));
+    assert.notEqual(otherBot.spec.id, first.spec.id);
+    await assert.rejects(bob.receiveRequest({ ...adminRequest, senderId: 'bob-user', messageId: 'spoof-reply', content: `${first.spec.id} greet.sh` }), /not awaiting a reply/);
+    const reply = { ...adminRequest, messageId: 'reply-first', content: `${first.spec.id} greet.sh` };
+    const resumed = await bob.receiveRequest(reply);
+    assert.equal(resumed.spec.id, first.spec.id); assert.equal(resumed.state.status, 'pending'); assert.equal(resumed.state.seq, 3);
+    assert.equal((await bob.receiveRequest(reply)).state.seq, 3);
+    await assert.rejects(bob.resolveRequest(first.spec.id, 1, { action: 'answer', response: 'old interpretation' }), /different content/);
+    await assert.rejects(alice.resolveRequest(first.spec.id, 3, interpretedTask), /receiving bot/);
+    const answered = await bob.resolveRequest(first.spec.id, 3, { action: 'answer', response: '收到，暂不创建任务。' });
+    assert.equal(answered.request.state.status, 'answered'); assert.equal((await bob.list()).length, 0);
+    const last = await bob.receiveRequest({ ...adminRequest, messageId: 'reply-second', content: 'test.sh' });
+    assert.equal(last.spec.id, second.spec.id, 'one remaining question accepts an ordinary reply');
+  } finally { await f.cleanup(); }
+});
+
+test('natural resolutions reject stale revisions, invalid payloads and illegal signed transitions', async () => {
+  const f = await fixture();
+  try {
+    const alice = await f.make('alice', 'alice-data'); const request = await alice.receiveRequest(groupRequest('validation'));
+    for (const resolution of [null, { action: 'approve' }, { action: 'answer', response: ' ' }, { action: 'answer', response: 'ok', task: {} }, { action: 'clarify', response: 'ok', extra: true }, { ...interpretedTask, task: { ...interpretedTask.task, acceptance: [] } }, { ...interpretedTask, task: { ...interpretedTask.task, workflow: ['unknown'] } }]) {
+      await assert.rejects(alice.resolveRequest(request.spec.id, 1, resolution));
+    }
+    await assert.rejects(alice.resolveRequest(request.spec.id, 0, interpretedTask), /latest expected_seq/);
+    await assert.rejects(alice.resolveRequest(request.spec.id, 2, interpretedTask), /changed/);
+    const answered = await alice.resolveRequest(request.spec.id, 1, { action: 'answer', response: '没有待处理的任务。' });
+    const { signature: answeredSignature, ...unsignedAnswered } = answered.request.events[1];
+    const extraEvent = alice.store.sign({ ...unsignedAnswered, seq: 3, event_id: '00000000-0000-4000-8000-000000000001', idempotency_key: 'illegal-clarify', type: 'clarified' });
+    assert.throws(() => reduceInbox(request.spec, [...answered.request.events, extraEvent], f.team), /pending request/);
+    const strayPayload = alice.store.sign({ ...unsignedAnswered, content: 'unexpected' });
+    assert.throws(() => reduceInbox(request.spec, [request.events[0], strayPayload], f.team), /event payload/);
+    assert.equal((await alice.list()).length, 0);
   } finally { await f.cleanup(); }
 });

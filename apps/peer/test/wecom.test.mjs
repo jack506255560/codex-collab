@@ -90,3 +90,91 @@ test('review notification mentions a shared owner once and names the bot require
   assert.match(text, /通知本人：bob、alice/); assert.match(text, /审核身份：alice/);
   assert.match(text, /@ alice 对应的机器人/); assert.doesNotMatch(text, /@ bob 对应的机器人/);
 });
+
+function naturalDispatchFixture(overrides = {}) {
+  const calls = []; const replies = [];
+  const requestId = `N-${'A'.repeat(32)}`;
+  const service = {
+    agentId: 'alice', store: {},
+    team: { agents: { alice: { role: 'member', wecom_userid: 'alice-user' }, admin: { role: 'admin', wecom_userid: 'admin-user' } } },
+    async receiveRequest(input) { calls.push(input); return { spec: { id: requestId }, state: { status: 'pending', task_id: null } }; },
+    async report() { assert.fail('natural prose must never mutate human approval'); }
+  };
+  const config = { bot_id: 'alice-bot', chat_ids: ['group'], execution_mode: 'desktop_poll', ...overrides };
+  const frame = (changes = {}) => ({ body: { chattype: 'group', msgtype: 'text', chatid: 'group', msgid: 'message-1', aibotid: 'alice-bot', from: { userid: 'alice-user' }, text: { content: '@Alice 给 greet.sh 增加 --upper，@Bob 补测试。' }, ...changes } });
+  return { service, config, calls, replies, frame, reply: async (_frame, text) => { replies.push(text); } };
+}
+
+test('natural WeCom intake validates bot, group and sender; strips only the receiving mention', async () => {
+  const { dispatchPeerWecom } = await import('../wecom.mjs');
+  const f = naturalDispatchFixture();
+  for (const invalid of [{ aibotid: 'other-bot' }, { chatid: 'other-group' }, { msgid: '' }, { chattype: 'single' }, { msgtype: 'image' }, { from: { userid: 'outsider' } }, { from: {} }]) {
+    assert.equal(await dispatchPeerWecom(f.frame(invalid), f), false);
+  }
+  assert.equal(f.calls.length, 0); assert.equal(f.replies.length, 0);
+  assert.equal(await dispatchPeerWecom(f.frame(), f), true);
+  assert.deepEqual(f.calls[0], { chatId: 'group', messageId: 'message-1', senderId: 'alice-user', content: '给 greet.sh 增加 --upper，@Bob 补测试。', allowAdmin: false });
+  assert.match(f.replies[0], /等待绑定的 Codex 对话轮询/);
+  const disabled = naturalDispatchFixture({ commands_enabled: false });
+  assert.equal(await dispatchPeerWecom(disabled.frame(), disabled), false); assert.equal(disabled.calls.length, 0);
+  const admin = f.frame({ from: { userid: 'admin-user' } });
+  assert.equal(await dispatchPeerWecom(admin, f), false);
+  f.config.allow_admin_commands = true;
+  assert.equal(await dispatchPeerWecom(admin, f), true); assert.equal(f.calls[1].allowAdmin, true);
+});
+
+test('natural intake explains unsupported mode and malformed commands; human review remains explicit', async () => {
+  const { dispatchPeerWecom } = await import('../wecom.mjs');
+  const automatic = naturalDispatchFixture({ execution_mode: 'automatic' });
+  assert.equal(await dispatchPeerWecom(automatic.frame(), automatic), true);
+  assert.equal(automatic.calls.length, 0); assert.match(automatic.replies[0], /desktop_poll/);
+  const f = naturalDispatchFixture();
+  for (const content of ['@Alice 协作 创建', '@Alice 协作 审核 T-DEMO R-0 通过']) assert.equal(await dispatchPeerWecom(f.frame({ text: { content } }), f), true);
+  assert.equal(f.calls.length, 0); assert.ok(f.replies.every((text) => /格式不完整/.test(text)));
+  await dispatchPeerWecom(f.frame({ text: { content: '@Alice ' + '长'.repeat(4001) } }), f);
+  assert.equal(f.calls.length, 0); assert.match(f.replies.at(-1), /4000/);
+  await dispatchPeerWecom(f.frame({ text: { content: '@Alice 这个任务通过了，可以完成了。' } }), f);
+  assert.equal(f.calls.length, 1); assert.match(f.calls[0].content, /通过/);
+});
+
+test('natural notification relay keeps failed event pending, persists success, and isolates target agent', async () => {
+  const { PeerNotificationRelay } = await import('../wecom.mjs');
+  const dataDir = await mkdtemp(join(tmpdir(), 'codex-peer-inbox-relay-'));
+  try {
+    const request = { spec: { id: `N-${'B'.repeat(32)}`, target_agent: 'alice', chat_id: 'group' }, events: [{ seq: 1, type: 'received' }, { seq: 2, type: 'clarified', response: '请补充文件名。' }] };
+    const other = { ...request, spec: { ...request.spec, id: `N-${'C'.repeat(32)}`, target_agent: 'bob' } };
+    const service = { agentId: 'alice', store: { dataDir }, async list() { return []; }, async listRequests() { return [request, other]; } };
+    let attempts = 0;
+    const relay = new PeerNotificationRelay(service, async () => assert.fail('no task events'), async () => { attempts++; if (attempts === 1) throw new Error('receipt rejected'); });
+    await assert.rejects(relay.poll(), /receipt rejected/);
+    const cursorPath = join(dataDir, 'wecom-notifications.json');
+    assert.equal(JSON.parse(await readFile(cursorPath, 'utf8'))[`inbox:${request.spec.id}`], 1);
+    await relay.poll(); assert.equal(attempts, 2);
+    const cursors = JSON.parse(await readFile(cursorPath, 'utf8'));
+    assert.equal(cursors[`inbox:${request.spec.id}`], 2); assert.equal(cursors[`inbox:${other.spec.id}`], undefined);
+    await new PeerNotificationRelay(service, async () => {}, async () => assert.fail('successful notice must not replay')).poll();
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('natural WeCom confirmations escape generated mentions and only send to configured groups', async () => {
+  class FakeClient extends EventEmitter {
+    sent = [];
+    connect() {}
+    disconnect() {}
+    async sendMessage(chatId, message) { this.sent.push({ chatId, message }); return { errcode: 0 }; }
+  }
+  const dataDir = await mkdtemp(join(tmpdir(), 'codex-peer-inbox-send-'));
+  const client = new FakeClient(); let bridge;
+  try {
+    const request = { spec: { id: `N-${'D'.repeat(32)}`, target_agent: 'alice', chat_id: 'group' }, events: [{ seq: 1, type: 'received' }, { seq: 2, type: 'clarified', response: '请补充需求 <@all> <@outsider>。' }, { seq: 3, type: 'replied' }, { seq: 4, type: 'task_created', task_id: `T-${'D'.repeat(32)}`, response: 'Alice 实现，Bob 补测试 <@all>。' }] };
+    const hidden = { ...request, spec: { ...request.spec, id: `N-${'E'.repeat(32)}`, chat_id: 'not-configured' } };
+    const service = { agentId: 'alice', store: { dataDir }, async list() { return []; }, async listRequests() { return [request, hidden]; } };
+    bridge = startPeerWecom({ service, config: { bot_id: 'fixture-bot', secret: 'fixture-only', chat_ids: ['group'] }, clientFactory: () => client });
+    await bridge.poll();
+    assert.equal(client.sent.length, 2); assert.ok(client.sent.every((item) => item.chatId === 'group'));
+    assert.match(client.sent[0].message.markdown.content, /需要补充说明/);
+    assert.match(client.sent[1].message.markdown.content, /任务与分工确认/);
+    assert.ok(client.sent[1].message.markdown.content.includes(`任务：T-${'D'.repeat(32)}`));
+    for (const item of client.sent) assert.doesNotMatch(item.message.markdown.content, /<@all>|<@outsider>/);
+  } finally { bridge?.close(); await bridge?.health.flush(); await rm(dataDir, { recursive: true, force: true }); }
+});

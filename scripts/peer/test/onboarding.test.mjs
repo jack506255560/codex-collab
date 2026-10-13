@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,8 @@ import { PassThrough } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
 import { generateIdentity } from '../../../packages/peer/config.mjs';
 import { attachProject, buildTeamPolicy, createIdentityFiles, createMemberConfig, createPrompts, diagnosePeer, runSetupWizard, writeTeamPolicy } from '../onboarding.mjs';
+
+import { refreshProject } from '../refresh-project.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const cli = join(root, 'bin/codex-collab.mjs');
@@ -208,4 +210,85 @@ test('setup menu reads and validates the selected role', { timeout: 5000 }, asyn
   assert.match(transcript(), /Codex Collab setup/);
   assert.match(transcript(), /初始化团队（管理员）/);
   assert.match(transcript(), /加入现有团队（成员）/);
+});
+
+async function refreshFixture() {
+  const f = await fixture();
+  try {
+    await createMemberConfig({ teamPath: f.teamPath, identityPath: f.identityPath, repoPath: f.repo, dataDir: f.dataDir, configPath: f.configPath });
+    const attached = await attachProject({ configPath: f.configPath, repoPath: f.repo });
+    return { ...f, ...attached };
+  } catch (error) { await f.cleanup(); throw error; }
+}
+
+test('refresh upgrades a known legacy Skill, preserves other settings/resources and is idempotent', async () => {
+  const f = await refreshFixture();
+  try {
+    const original = execFileSync('git', ['show', 'HEAD:packages/codex-kit/templates/.agents/skills/team-collab-desktop/SKILL.md'], { cwd: root, encoding: 'utf8' });
+    await writeFile(f.skill, original);
+    const unrelated = 'model = "existing-provider-model"\n[mcp_servers.other]\ncommand = "other-tool"\n';
+    const before = unrelated + await readFile(f.mcp_config, 'utf8');
+    await writeFile(f.mcp_config, before);
+    const references = join(f.repo, '.agents/skills/team-collab-desktop/references');
+    await mkdir(references); await writeFile(join(references, 'peer.md'), 'Keep this local reference.');
+    const result = await refreshProject({ configPath: f.configPath });
+    assert.equal(result.changed, true); assert.equal(result.heartbeat_updated, false);
+    const backup = JSON.parse(await readFile(result.backup, 'utf8'));
+    assert.equal(backup.config_toml, before); assert.equal(backup.skill, original);
+    assert.equal((await stat(result.backup)).mode & 0o777, 0o600);
+    assert.equal((await stat(result.binding_prompt)).mode & 0o777, 0o600);
+    assert.match(await readFile(result.binding_prompt, 'utf8'), /resolve_desktop_request/);
+    assert.match(await readFile(result.binding_prompt, 'utf8'), /已有.*heartbeat|更新.*heartbeat/);
+    assert.ok((await readFile(f.mcp_config, 'utf8')).startsWith(unrelated));
+    assert.match(await readFile(f.skill, 'utf8'), /natural-language request interpretation/);
+    assert.equal(await readFile(join(references, 'peer.md'), 'utf8'), 'Keep this local reference.');
+    const again = await refreshProject({ configPath: f.configPath });
+    assert.equal(again.changed, false); assert.equal(again.backup, null);
+    assert.equal(git(f.repo, 'status', '--porcelain'), '');
+  } finally { await f.cleanup(); }
+});
+
+test('refresh refuses customized Skill/MCP and a different personal config without overwriting files', async () => {
+  const f = await refreshFixture();
+  try {
+    const toml = await readFile(f.mcp_config, 'utf8'); const skill = await readFile(f.skill, 'utf8');
+    await writeFile(f.skill, skill + '\nCustom instruction.\n');
+    await assert.rejects(refreshProject({ configPath: f.configPath }), /Skill 已自定义/);
+    assert.equal(await readFile(f.mcp_config, 'utf8'), toml);
+    await writeFile(f.skill, skill);
+    await writeFile(f.mcp_config, toml + 'enabled = false\n');
+    await assert.rejects(refreshProject({ configPath: f.configPath }), /MCP 有自定义设置/);
+    assert.equal(await readFile(f.mcp_config, 'utf8'), toml + 'enabled = false\n');
+    await writeFile(f.mcp_config, toml);
+    const other = join(f.dir, 'private/other.json'); await writeFile(other, await readFile(f.configPath), { mode: 0o600 });
+    await assert.rejects(refreshProject({ configPath: other }), /实际使用的个人配置路径/);
+    assert.equal(await readFile(f.skill, 'utf8'), skill);
+    assert.equal(await readFile(f.mcp_config, 'utf8'), toml);
+  } finally { await f.cleanup(); }
+});
+
+test('refresh refuses tracked or symlinked project configuration', async () => {
+  const f = await refreshFixture();
+  try {
+    const skill = await readFile(f.skill, 'utf8');
+    git(f.repo, 'add', '-f', '.agents/skills/team-collab-desktop/SKILL.md');
+    await assert.rejects(refreshProject({ configPath: f.configPath }), /已提交到项目 Git/);
+    git(f.repo, 'reset', '--', '.agents/skills/team-collab-desktop/SKILL.md');
+    const target = join(f.dir, 'outside-skill.md'); await writeFile(target, skill);
+    await rm(f.skill); await symlink(target, f.skill);
+    await assert.rejects(refreshProject({ configPath: f.configPath }), /符号链接/);
+    assert.equal(await readFile(target, 'utf8'), skill);
+  } finally { await f.cleanup(); }
+});
+
+test('refresh CLI generates a new saved prompt but never edits a desktop binding', async () => {
+  const f = await refreshFixture();
+  try {
+    const binding = join(f.dataDir, 'desktop-binding.json');
+    await writeFile(binding, '{"thread_id":"fixture-thread"}\n', { mode: 0o600 });
+    const output = JSON.parse(execFileSync(process.execPath, [cli, 'refresh-project', f.configPath], { encoding: 'utf8' }));
+    assert.equal(output.agent_id, 'bob'); assert.equal(output.heartbeat_updated, false);
+    assert.equal(await readFile(binding, 'utf8'), '{"thread_id":"fixture-thread"}\n');
+    assert.throws(() => execFileSync(process.execPath, [cli, 'refresh-project'], { stdio: 'pipe' }), { status: 1 });
+  } finally { await f.cleanup(); }
 });

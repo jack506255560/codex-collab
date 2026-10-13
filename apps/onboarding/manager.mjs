@@ -10,6 +10,7 @@ import { canonical, digest, generateIdentity, readPrivateJson, validateTeam } fr
 import { PeerGitStore, git } from '../../packages/peer/store.mjs';
 import { approveEnrollment, enrollmentRequest, invitationFile, invitationRecord, policyVersion, recordHash, registryPath, requestFile, validateEnrollment, validateHistory, validateInvitation, versionFile, readRegistry } from '../../packages/peer/registry.mjs';
 import { attachProject, buildTeamPolicy, createMemberConfig, diagnosePeer, getOrCreateIdentityFiles } from '../../scripts/peer/onboarding.mjs';
+import { installedProjectConfig, refreshProject } from '../../scripts/peer/refresh-project.mjs';
 import { bindingPrompt } from '../../scripts/peer/setup-desktop-project.mjs';
 import { readPeerConfig, loadRuntime } from '../peer/runtime.mjs';
 import { DesktopExecutor } from '../peer/desktop.mjs';
@@ -227,6 +228,16 @@ export class SetupManager {
     await savePrivate(resolve(config_path), { ...config, team_registry_root: rootHash });
     await this.save(state); this.runCli('start', resolve(config_path)); return this.detail(id, { localOnly: true });
   }
+  async refreshAttachment(state, configPath) {
+    try {
+      const installed = await installedProjectConfig({ repoPath: state.repo, agentId: state.agent_id });
+      const source = (await readPeerConfig(configPath)).config;
+      const bound = (await readPeerConfig(installed.config_path)).config;
+      if (bound.agent_id !== source.agent_id || bound.private_key !== source.private_key ||
+          await realpath(bound.repo) !== await realpath(source.repo) || resolve(bound.data_dir) !== resolve(source.data_dir)) throw new SetupError('项目 MCP 使用其他身份或数据目录，请手动检查原绑定。');
+      await refreshProject({ configPath: installed.config_path });
+    } catch (error) { throw new SetupError(error.message); }
+  }
   async resume(id) {
     const state = await this.state(id);
     try {
@@ -288,15 +299,18 @@ export class SetupManager {
         await diagnosePeer(configPath, { testPush: true });
         if (!state.attached) {
           const existing = await readFile(join(state.repo, '.codex', 'config.toml'), 'utf8').catch(() => '');
-          const template = await readFile(join(packageRoot, 'packages/codex-kit/templates/.agents/skills/team-collab-desktop/SKILL.md'), 'utf8');
-          const installed = await readFile(join(state.repo, '.agents/skills/team-collab-desktop/SKILL.md'), 'utf8').catch(() => '');
-          if (!existing.includes(JSON.stringify(configPath)) || installed !== template) await attachProject({ configPath, repoPath: state.repo });
+          if (projectMcpConfigured(existing, configPath, await readPrivateJson(configPath))) await this.refreshAttachment(state, configPath);
+          else await attachProject({ configPath, repoPath: state.repo });
           state.attached = true; await this.save(state);
         }
         await savePrivate(join(this.path(id), 'binding.json'), { prompt: bindingPrompt(state.agent_id, state.repo) });
         state.phase = 'ready'; state.last_error = null; await this.save(state);
       }
-      if (state.phase === 'ready') this.runCli('start', state.existing_config || join(this.path(id), 'peer.json'));
+      if (state.phase === 'ready') {
+        await this.refreshAttachment(state, state.existing_config || join(this.path(id), 'peer.json'));
+        await savePrivate(join(this.path(id), 'binding.json'), { prompt: bindingPrompt(state.agent_id, state.repo) });
+        this.runCli('start', state.existing_config || join(this.path(id), 'peer.json'));
+      }
       state.last_error = null; await this.save(state);
       return this.detail(id, { localOnly: true });
     } catch (error) {

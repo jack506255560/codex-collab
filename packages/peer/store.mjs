@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { digest, makeSigner, validateTeam } from './config.mjs';
 import { reducePeerTask, taskIdPattern } from './protocol.mjs';
+import { inboxIdPattern, reduceInbox } from './inbox.mjs';
 import { readRegistry, recordHash, registryPath } from './registry.mjs';
 const exec = promisify(execFile);
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -113,6 +114,86 @@ export class PeerGitStore {
   }
   async list() { return this.locked(async () => { await this.sync(); return this.listLocal(); }); }
   async read(id) { return this.locked(async () => { await this.sync(); return this.readLocal(id); }); }
+  inboxRoot(id) {
+    if (!inboxIdPattern.test(id || '')) throw new Error('invalid inbox request ID');
+    return join(this.checkout, '.agent-collab', 'peer', 'inbox', id);
+  }
+  async readInboxLocal(id) {
+    const root = this.inboxRoot(id);
+    const spec = JSON.parse(await readFile(join(root, 'spec.json'), 'utf8'));
+    if (spec.id !== id) throw new Error('inbox directory/spec mismatch');
+    const files = (await readdir(join(root, 'events'))).sort();
+    if (files.some((file) => !/^\d{6}-[a-f0-9-]{36}\.json$/.test(file))) throw new Error('unexpected inbox event file');
+    const events = await Promise.all(files.map(async (file) => JSON.parse(await readFile(join(root, 'events', file), 'utf8'))));
+    const team = this.registry ? this.registry.teams.get(events[0]?.team_hash) : this.team;
+    if (!team) throw new Error('inbox references an untrusted team policy');
+    const state = reduceInbox(spec, events, team);
+    if (state.task_id) {
+      const task = await this.readLocal(state.task_id); const resolution = events.at(-1);
+      if (digest(task.spec) !== resolution.task_hash || task.events[0].actor_id !== spec.target_agent || task.spec.execution_mode !== 'desktop_poll' || task.spec.source?.chat_id !== spec.chat_id || task.events[0].idempotency_key !== `inbox-task:${id}`) throw new Error('inbox resolution does not match its signed task');
+    }
+    return { spec, events, state, team };
+  }
+  async listInboxLocal() {
+    let entries;
+    try { entries = await readdir(join(this.checkout, '.agent-collab', 'peer', 'inbox')); }
+    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+    if (entries.some((id) => !inboxIdPattern.test(id))) throw new Error('unexpected inbox entry');
+    return Promise.all(entries.sort().map((id) => this.readInboxLocal(id)));
+  }
+  async listInbox() { return this.locked(async () => { await this.sync(); return this.listInboxLocal(); }); }
+  // One remote Git CAS publishes BOTH the interpreted task and its resolution.
+  // Retries cannot leave a task created with a still-pending request.
+  async transactInbox(idempotencyKey, build, { replay = () => {} } = {}) {
+    if (this.enrollmentOnly) throw new Error('enrollment client cannot write inbox requests');
+    if (typeof idempotencyKey !== 'string' || !idempotencyKey || idempotencyKey.length > 300) throw new Error('invalid inbox idempotency key');
+    return this.locked(async () => {
+      for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+        await this.sync();
+        const requests = await this.listInboxLocal();
+        const duplicate = requests.find((request) => request.events.some((event) => event.idempotency_key === idempotencyKey));
+        if (duplicate) {
+          if (duplicate.spec.target_agent !== this.agentId) throw new Error('inbox idempotency key belongs to another identity');
+          await replay(duplicate); return duplicate;
+        }
+        const built = await build(requests, this.clock());
+        const current = requests.find((request) => request.spec.id === built.id);
+        const spec = current?.spec || built.spec;
+        if (!spec || spec.id !== built.id || spec.target_agent !== this.agentId) throw new Error('inbox transaction identity mismatch');
+        const now = new Date(this.clock()).toISOString();
+        const team = current?.team || this.team;
+        const event = makeSigner(team, this.agentId, this.privateKey)({ schema_version: 1, request_id: spec.id,
+          seq: (current?.state.seq || 0) + 1, event_id: randomUUID(), actor_id: this.agentId, occurred_at: now,
+          idempotency_key: idempotencyKey, ...built.event, ...(current ? {} : { spec_hash: digest(spec) }) });
+        reduceInbox(spec, [...(current?.events || []), event], team);
+        if ((event.type === 'task_created') !== !!built.taskSpec) throw new Error('inbox task must be published with its resolution');
+        const paths = [this.inboxRoot(spec.id)];
+        if (built.taskSpec) {
+          const taskSpec = built.taskSpec;
+          const taskEvent = this.sign({ schema_version: 2, task_id: taskSpec.id, seq: 1, event_id: randomUUID(), actor_id: this.agentId,
+            occurred_at: now, idempotency_key: `inbox-task:${spec.id}`, type: 'created', spec_hash: digest(taskSpec) });
+          reducePeerTask(taskSpec, [taskEvent], this.team);
+          if (taskSpec.id !== event.task_id || digest(taskSpec) !== event.task_hash || taskSpec.execution_mode !== 'desktop_poll' || taskSpec.source?.chat_id !== spec.chat_id) throw new Error('inbox/task provenance mismatch');
+          const taskRoot = this.root(taskSpec.id); paths.push(taskRoot);
+          await mkdir(join(taskRoot, 'events'), { recursive: true });
+          await writeFile(join(taskRoot, 'spec.json'), JSON.stringify(taskSpec, null, 2) + '\n', { flag: 'wx' });
+          await writeFile(join(taskRoot, 'events', `000001-${taskEvent.event_id}.json`), JSON.stringify(taskEvent, null, 2) + '\n', { flag: 'wx' });
+        }
+        const root = this.inboxRoot(spec.id); await mkdir(join(root, 'events'), { recursive: true });
+        if (!current) await writeFile(join(root, 'spec.json'), JSON.stringify(spec, null, 2) + '\n', { flag: 'wx' });
+        await writeFile(join(root, 'events', `${String(event.seq).padStart(6, '0')}-${event.event_id}.json`), JSON.stringify(event, null, 2) + '\n', { flag: 'wx' });
+        await git(this.checkout, 'add', '--', ...paths); await git(this.checkout, 'commit', '-m', `collab(inbox): ${spec.id} ${event.type}`);
+        try { await git(this.checkout, 'push', 'origin', 'HEAD:refs/heads/agent-collab'); return this.readInboxLocal(spec.id); }
+        catch {
+          await this.sync();
+          const accepted = (await this.listInboxLocal()).find((request) => request.events.some((item) => item.idempotency_key === idempotencyKey));
+          if (accepted) { await replay(accepted); return accepted; }
+          await pause(20 * (attempt + 1));
+        }
+      }
+      throw new Error('inbox transaction not accepted; check Git access or retry');
+    });
+  }
   async registryTransaction(build) {
     return this.locked(async () => {
       for (let attempt = 0; attempt < this.maxRetries; attempt++) {

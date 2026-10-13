@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:codex-collab:peer-inbox:v1",
+  "title": "Codex Collab Natural Language Inbox Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "repo",
+    "target_agent",
+    "chat_id",
+    "sender_id",
+    "content",
+    "message_key",
+    "admin_dispatch"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^N-[A-F0-9]{32}$"
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_agent": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+    },
+    "chat_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S"
+    },
+    "sender_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    },
+    "message_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "\\S"
+    },
+    "admin_dispatch": {
+      "type": "boolean"
+    }
+  },
+  "$comment": "Runtime also verifies the repo and target against the pinned team, a deterministic request ID derived from target_agent and message_key, and bot-owner or allowed administrator authorization. The original group request is shared in Git; private Codex transcripts, bindings and credentials stay local."
+}
