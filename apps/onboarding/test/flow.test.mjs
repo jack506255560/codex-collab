@@ -119,6 +119,12 @@ test('admin allocates encrypted bot package; member enrolls locally; desktop sta
     const finished = await bobDesktop.finish('bob-thread', task.spec.id, '后端已完成'); assert.equal(finished.state.status, 'review');
     assert.equal((await bobDesktop.status()).poll_count, 2); assert.ok((await bobDesktop.status()).last_poll_at);
     assert.equal((await f.manager.detail(bobProfile.id)).poll_observed, true);
+    const { mkdir } = await import('node:fs/promises');
+    const bobData = bob.config.data_dir;
+    await mkdir(bobData, { recursive: true });
+    await writeFile(join(bobData, 'runner.pid.json'), JSON.stringify({ pid: process.pid, config: ready.config_path }));
+    await writeFile(join(bobData, 'wecom-health.json'), JSON.stringify({ pid: process.pid, status: 'authenticated' }));
+    assert.equal((await f.manager.detail(bobProfile.id)).can_receive_tasks, true);
     const botConfig = { ...bob.config.wecom, execution_mode: 'desktop_poll' }; let reply = '';
     const body = { chattype: 'group', msgtype: 'text', chatid: 'group', msgid: 'admin-dispatch', from: { userid: 'owner-alice' }, text: { content: '协作 创建 指派给后端 | tests pass' } };
     assert.equal(await dispatchPeerWecom({ body }, { service: bob.service, config: botConfig, reply: async (_, value) => { reply = value; } }), true); assert.match(reply, /已创建/);
@@ -156,14 +162,44 @@ test('existing admin/member configs adopt signed registry without changing task 
   } finally { await f.cleanup(); }
 });
 
+test('imported legacy desktop attachment recognizes its generated desktop MCP config', async () => {
+  const f = await fixture();
+  try {
+    const { setupLocal } = await import('../../../scripts/peer/setup-local.mjs');
+    const { setupDesktopProject } = await import('../../../scripts/peer/setup-desktop-project.mjs');
+    const { savePrivate } = await import('../manager.mjs');
+    const { readPrivateJson } = await import('../../../packages/peer/config.mjs');
+    const { execFileSync } = await import('node:child_process');
+    const output = await setupLocal({ demo: f.repos.alice, out: join(f.root, 'legacy-mcp'), mode: 'desktop-poll' });
+    const configPaths = {};
+    for (const id of ['alice', 'bob']) {
+      const configPath = output.configs[id];
+      const config = await readPrivateJson(configPath);
+      const target = join(f.root, `legacy-${id}-target`);
+      execFileSync('git', ['clone', output.shared_origin, target], { stdio: 'ignore' });
+      await savePrivate(configPath, { ...config, repo: target, wecom: { bot_id: `legacy-${id}`, secret: 'fixture', chat_ids: ['group'], commands_enabled: false } });
+      await setupDesktopProject({ configPath, repo: target });
+      configPaths[id] = configPath;
+    }
+
+    const admin = await f.manager.importExisting({ config_path: configPaths.alice });
+    assert.deepEqual(admin.project_setup, { mcp_configured: true, skill_installed: true });
+    const imported = await f.manager.importExisting({ config_path: configPaths.bob });
+    assert.deepEqual(imported.project_setup, { mcp_configured: true, skill_installed: true });
+  } finally { await f.cleanup(); }
+});
+
 test('interrupted project attachment resumes without overwriting user configuration', async () => {
   const f = await fixture();
   try {
     const { mkdir } = await import('node:fs/promises');
     const { savePrivate } = await import('../manager.mjs');
     const path = join(f.repos.alice, '.codex/config.toml'); await mkdir(join(f.repos.alice, '.codex'), { recursive: true }); await writeFile(path, 'model = "existing-provider-model"\n');
-    const admin = await f.admin(); let state = await f.manager.state(admin.id); state.phase = 'configuring'; state.attached = false; await f.manager.save(state);
+    const admin = await f.admin();
+    assert.deepEqual(admin.project_setup, { mcp_configured: true, skill_installed: true });
+    let state = await f.manager.state(admin.id); state.phase = 'configuring'; state.attached = false; await f.manager.save(state);
     const resumed = await f.manager.resume(admin.id); assert.equal(resumed.phase, 'ready'); assert.match(await readFile(path, 'utf8'), /existing-provider-model/);
+    assert.deepEqual(resumed.project_setup, { mcp_configured: true, skill_installed: true });
     const before = await readFile(path, 'utf8'); await f.manager.resume(admin.id); assert.equal(await readFile(path, 'utf8'), before);
     await savePrivate(join(f.manager.path(admin.id), 'data/runner.pid.json'), { pid: process.pid, config: admin.config_path });
     await assert.rejects(f.manager.beginDiscovery({ bot_id: 'bot-alice', secret: 'fixture' }), /已有本机 Runner/);
@@ -188,5 +224,63 @@ test('failed invitation publication can recover the same encrypted export withou
     const member = await f.manager.importBundle({ content: exported.content, password: 'long-fixture-password', repo: f.repos.bob });
     assert.equal(member.phase, 'imported');
     await assert.rejects(f.manager.issueBundle({ id: admin.id, agent_id: 'other', capabilities: 'backend', bot_id: 'recover-bob', secret: 'fixture', password: 'long-fixture-password' }), /有效接入包/);
+  } finally { await f.cleanup(); }
+});
+
+test('readiness requires MCP, Skill, authenticated runner, binding and recent polling', async () => {
+  const f = await fixture();
+  try {
+    const { rm } = await import('node:fs/promises');
+    const admin = await f.admin(); const runtime = await loadRuntime(admin.config_path);
+    const desktop = new DesktopExecutor(runtime.service, runtime.config);
+    await desktop.bind('readiness-thread'); await desktop.poll('readiness-thread');
+    await writeFile(join(runtime.config.data_dir, 'runner.pid.json'), JSON.stringify({ pid: process.pid, config: admin.config_path }));
+    await writeFile(join(runtime.config.data_dir, 'wecom-health.json'), JSON.stringify({ pid: process.pid, status: 'authenticated' }));
+    assert.equal((await f.manager.detail(admin.id)).can_receive_tasks, true);
+    const tomlPath = join(f.repos.alice, '.codex/config.toml'); const original = await readFile(tomlPath, 'utf8');
+    await writeFile(tomlPath, original.replace('[mcp_servers.team-collab-alice]', '[mcp_servers.team-collab-alice]\nenabled = false'));
+    assert.equal((await f.manager.detail(admin.id)).can_receive_tasks, false);
+    await writeFile(tomlPath, '');
+    const missingMcp = await f.manager.detail(admin.id); assert.equal(missingMcp.project_setup.mcp_configured, false); assert.equal(missingMcp.can_receive_tasks, false);
+    await writeFile(tomlPath, original);
+    await rm(join(f.repos.alice, '.agents/skills/team-collab-desktop/SKILL.md'));
+    const missingSkill = await f.manager.detail(admin.id); assert.equal(missingSkill.project_setup.skill_installed, false); assert.equal(missingSkill.can_receive_tasks, false);
+  } finally { await f.cleanup(); }
+});
+
+test('runner failures persist safe errors and successful retry clears them', async () => {
+  const f = await fixture();
+  try {
+    const admin = await f.admin(); f.manager.runCli = () => { throw new Error('SECRET-MUST-NOT-LEAK'); };
+    await assert.rejects(f.manager.runner({ id: admin.id, command: 'start' }), /机器人启动未完成/);
+    const failed = await f.manager.detail(admin.id); assert.match(failed.error, /Runner 日志/); assert.doesNotMatch(failed.error, /SECRET/);
+    await assert.rejects(f.manager.resume(admin.id), (error) => error.name === 'Error' && !error.message.includes('SECRET'));
+    assert.doesNotMatch((await f.manager.detail(admin.id)).error, /SECRET/);
+    f.manager.runCli = () => {};
+    assert.equal((await f.manager.runner({ id: admin.id, command: 'start' })).error, null);
+  } finally { await f.cleanup(); }
+});
+
+test('member import rejects another origin before creating a profile or changing repository settings', async () => {
+  const f = await fixture();
+  try {
+    const admin = await f.admin();
+    const invite = await f.manager.issueBundle({ id: admin.id, agent_id: 'bob', capabilities: 'backend', bot_id: 'bot-bob', secret: 'fixture-secret', password: 'long-fixture-password' });
+    const exported = await f.manager.exportedBundle(admin.id, invite.invite_id);
+    const otherRemote = join(f.root, 'another-origin.git');
+    execFileSync('git', ['clone', '--bare', f.remote, otherRemote], { stdio: 'ignore' });
+    git(f.repos.bob, 'remote', 'set-url', 'origin', otherRemote);
+    await assert.rejects(f.manager.importBundle({ content: exported.content, password: 'long-fixture-password', repo: f.repos.bob }), /origin 与邀请仓库不一致/);
+    assert.equal(git(f.repos.bob, 'remote', 'get-url', 'origin'), otherRemote);
+    assert.deepEqual((await f.manager.overview()).profiles.map((profile) => profile.id), [admin.id]);
+    assert.equal(git(f.repos.bob, 'status', '--porcelain'), '');
+  } finally { await f.cleanup(); }
+});
+
+test('malformed invitation file has an actionable error before creating local identity', async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(f.manager.importBundle({ content: '{broken', password: 'fixture-password', repo: f.repos.bob }), /接入包文件不是有效 JSON/);
+    assert.deepEqual((await f.manager.overview()).profiles, []);
   } finally { await f.cleanup(); }
 });

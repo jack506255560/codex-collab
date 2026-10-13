@@ -1,6 +1,6 @@
 # 企业微信任务 → 指定 Codex 桌面对话轮询执行
 
-日常团队使用 [本机网页接入向导](onboarding.md) 自动配置项目、群身份和机器人。本页保留隔离测试与底层轮询机制。已有配置可从网页导入，无需重绑对话。
+日常团队使用 [本机网页接入向导](onboarding.md) 自动配置项目、群身份和机器人。本页保留隔离测试与底层轮询机制。已有配置可从网页导入，无需重绑对话。一个真人使用多个机器人建议走向导的“给自己增加机器人”，允许 Alice/Bob 共享 userid 并各自处理命令。本页的旧隔离测试脚本仍默认只给 Alice 设置群命令身份。
 
 本模式是 `desktop_poll`，不是后台 SDK 自动模式，也不是旧的手动 `desktop` 保留。企业微信适配器负责入口/通知，Git 保存协议，**指定已有 Codex 对话的 heartbeat**负责调用 MCP 接单并在该对话执行。
 
@@ -90,7 +90,7 @@ node scripts/peer/cli.mjs start "$root/alice-peer.json"
 node scripts/peer/cli.mjs start "$root/bob-peer.json"
 ```
 
-日志应显示 `notifications only; automatic code execution disabled` 和两次各自的 `Peer WeCom authenticated`。Alice 接本人的群命令；Bob 在单真人模拟中只发送自己的通知。真实多用户需独立 owner 身份，不能复制同一真人 userid 绕过权限。
+日志应显示 `notifications only; automatic code execution disabled` 和两次各自的 `Peer WeCom authenticated`。本页旧脚本默认 Alice 接本人的群命令，Bob 只发送通知。这是测试夹具的默认设置；新网页向导支持同一真人拥有两个可接群命令的 Agent，各自用独立机器人和密钥。真实同事应验证各自本人账号。
 
 可用 CLI 检查“进程在线”和“企微已鉴权”是否是两个独立状态：
 
@@ -129,7 +129,7 @@ node scripts/peer/cli.mjs status "$root/bob-peer.json"
 @Alice 协作 完成 T-真实任务ID
 ```
 
-示例 `R-7` 替换为最新通知版本；v2 任务仍兼容省略版本号的旧命令。一个真人模拟两个机器人时，无独立群命令身份的 Bob 由 Alice 管理员审核。原生 @ 提醒需实群确认；审核与 Git 接力不依赖原生 @。
+示例 `R-7` 替换为最新通知版本；v2 任务仍兼容省略版本号的旧命令。本页旧夹具中没有群命令身份的 Bob 由 Alice 管理员审核；新向导中用相同本人账号验证的 Bob 默认通过 Bob 机器人审核，按当前通知操作。原生 @ 提醒需实群确认；审核与 Git 接力不依赖原生 @。
 
 ## MCP 与运行约束
 

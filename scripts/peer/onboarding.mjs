@@ -187,7 +187,13 @@ export async function attachProject({ configPath, repoPath }) {
   const block = `[mcp_servers.${serverName}]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(join(root, 'apps/peer/mcp-main.mjs'))}, ${JSON.stringify(configPath)}]`;
   const next = mergeMcpToml(before, serverName, block);
   const excludePath = await git(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude');
-  const oldExclude = await readFile(excludePath, 'utf8');
+  let oldExclude = '';
+  let excludeExisted = true;
+  try { oldExclude = await readFile(excludePath, 'utf8'); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    excludeExisted = false;
+  }
   const rules = [`/.codex/config.toml`, `/.agents/skills/${skillName}/`, '/.codex-collab-worktrees/'];
   const addedRules = rules.filter((rule) => !oldExclude.split(/\r?\n/).includes(rule));
   const template = await readFile(join(root, `packages/codex-kit/templates/.agents/skills/${skillName}/SKILL.md`), 'utf8');
@@ -197,12 +203,18 @@ export async function attachProject({ configPath, repoPath }) {
     await writeFile(configFile, next, { mode: 0o600 });
     await chmod(configFile, 0o600);
     await writeFile(skillFile, template, { mode: 0o600, flag: 'wx' });
-    if (addedRules.length) await writeFile(excludePath, `${oldExclude}${oldExclude.endsWith('\n') || !oldExclude ? '' : '\n'}${addedRules.join('\n')}\n`);
+    if (addedRules.length) {
+      await mkdir(dirname(excludePath), { recursive: true, mode: 0o700 });
+      await writeFile(excludePath, `${oldExclude}${oldExclude.endsWith('\n') || !oldExclude ? '' : '\n'}${addedRules.join('\n')}\n`);
+    }
   } catch (error) {
     if (before) await writeFile(configFile, before, { mode: 0o600 });
     else await rm(configFile, { force: true });
     await rm(skillDir, { recursive: true, force: true });
-    if (addedRules.length) await writeFile(excludePath, oldExclude);
+    if (addedRules.length) {
+      if (excludeExisted) await writeFile(excludePath, oldExclude);
+      else await rm(excludePath, { force: true });
+    }
     throw error;
   }
   return { repo, mcp_config: configFile, skill: skillFile };

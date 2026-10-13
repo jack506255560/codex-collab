@@ -52,6 +52,29 @@ async function fixture() {
   };
 }
 
+test('project attachment creates a missing Git info/exclude and installs local MCP/Skill files', async () => {
+  const f = await fixture();
+  try {
+    const { config } = await createMemberConfig({
+      teamPath: f.teamPath, identityPath: f.identityPath, repoPath: f.repo,
+      dataDir: f.dataDir, configPath: f.configPath, testArgv: ['sh', 'test.sh']
+    });
+    assert.equal(config.agent_id, 'bob');
+    const excludePath = git(f.repo, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude');
+    await rm(excludePath, { force: true });
+    await assert.rejects(stat(excludePath), { code: 'ENOENT' });
+
+    const attached = await attachProject({ configPath: f.configPath, repoPath: f.repo });
+    assert.match(await readFile(attached.mcp_config, 'utf8'), /\[mcp_servers\.team-collab-bob\]/);
+    assert.match(await readFile(attached.skill, 'utf8'), /poll_desktop_task/);
+    const exclude = await readFile(excludePath, 'utf8');
+    assert.match(exclude, /^\/\.codex\/config\.toml$/m);
+    assert.match(exclude, /^\/\.agents\/skills\/team-collab-desktop\/$/m);
+    assert.match(exclude, /^\/\.codex-collab-worktrees\/$/m);
+    assert.equal(git(f.repo, 'check-ignore', '.codex/config.toml'), '.codex/config.toml');
+  } finally { await f.cleanup(); }
+});
+
 test('identity create keeps private key local and emits a separate public PEM', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'codex-collab-identity-'));
   try {

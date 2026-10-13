@@ -33,6 +33,7 @@ export async function dispatchPeerWecom(frame, { service, config, reply }) {
   const sender = body.from?.userid;
   const owner = !!sender && sender === service.team.agents[service.agentId]?.wecom_userid;
   const admin = config.allow_admin_commands === true && !!sender && Object.values(service.team.agents).some((agent) => agent.role === 'admin' && agent.wecom_userid === sender);
+  // Shared owners do not merge agent roles: the receiving bot selects its signer.
   // Admins may dispatch/query via a member bot. Review mutations must be signed by
   // the human reviewer's own identity, never by impersonating another member.
   if (!owner && !(admin && ['create', 'status'].includes(command.action))) return false;
@@ -92,15 +93,20 @@ export function formatPeerNotification(task, type, agentId, team) {
     if (members.length) {
       // WeCom's Markdown extension is best-effort on the smart-bot transport.
       // Encrypted callback userids and actual native @ rendering need group verification.
-      detail.push(`通知本人：${members.map((id) => {
+      const owners = new Map();
+      for (const id of members) {
         const userid = team.agents[id].wecom_userid;
-        return /^[a-zA-Z0-9_-]{1,128}$/.test(userid) ? `${id} <@${userid}>` : id;
-      }).join('、')}`);
+        const ids = owners.get(userid) || []; ids.push(id); owners.set(userid, ids);
+      }
+      detail.push(`通知本人：${[...owners].map(([userid, ids]) => {
+        const names = ids.join('、');
+        return /^[a-zA-Z0-9_-]{1,128}$/.test(userid) ? `${names} <@${userid}>` : names;
+      }).join('；')}`);
     }
     if (type === 'handoff') detail.push(next());
     else {
-      detail.push(`${type === 'stage_review_requested' ? '本阶段等待真人审核，通过后继续下一阶段。' : '全部阶段已提交，等待真人审核。'}\n审核人：${task.state.assignee}；版本：R-${task.state.seq}`);
-      detail.push(`请审核人 @ 自己绑定的机器人发送：\n协作 审核 ${task.spec.id} R-${task.state.seq} 通过\n协作 审核 ${task.spec.id} R-${task.state.seq} 退回 | 修改意见`);
+      detail.push(`${type === 'stage_review_requested' ? '本阶段等待真人审核，通过后继续下一阶段。' : '全部阶段已提交，等待真人审核。'}\n审核人：${task.state.assignee} 的所有者；审核身份：${task.state.assignee}；版本：R-${task.state.seq}`);
+      detail.push(`请审核人 @ ${task.state.assignee} 对应的机器人发送：\n协作 审核 ${task.spec.id} R-${task.state.seq} 通过\n协作 审核 ${task.spec.id} R-${task.state.seq} 退回 | 修改意见`);
     }
   }
   if (type === 'reviewed') {

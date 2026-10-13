@@ -88,7 +88,7 @@ unset WECOM_BOT_SECRET
 
 不要把上面的真实 Secret 放在命令历史、聊天或 Git 中；如果曾经泄露，先在企业微信后台轮换，再使用新 Secret。
 
-同一个真人本机模拟两位 agent 时，第二个 Bot 可以在配置命令后加 `--notify-only`；它只发送该 agent 的事件，不接收群命令，不需要绑定第二个真人 userid。不得把同一个 userid 分配给两个团队成员。
+同一个真人可以拥有多个独立 Agent，并使用同一个已验证 `userid`；每个 Agent 仍需独立机器人、签名身份、clone 和对话。推荐通过 [网页向导](onboarding.md#一个人使用多个机器人或模拟两个同事) 添加。旧隔离测试也可以给第二个 Bot 加 `--notify-only`，让它只发送通知；这属于测试脚本的默认设置。不要手改既有签名任务的所有者绑定，旧客户端需要统一升级后再采用多 Agent 所有权。
 
 ## 安装当前 Codex 的 Skill 和 MCP
 

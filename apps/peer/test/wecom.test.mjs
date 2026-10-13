@@ -77,3 +77,16 @@ test('notification mentions only selected signed identities and escapes mentions
   assert.match(text, /<@alice-user>/); assert.match(text, /<@admin-user>/); assert.doesNotMatch(text, /<@outsider>|<@all>|<@bob-user>/);
   assert.match(text, /R-7 通过/); assert.match(text, /R-7 退回 \| 修改意见/);
 });
+
+
+test('review notification mentions a shared owner once and names the bot required to approve', async () => {
+  const { formatPeerNotification } = await import('../wecom.mjs');
+  const team = { reviewer: 'alice', agents: { alice: { wecom_userid: 'shared-owner' }, bob: { wecom_userid: 'shared-owner' } },
+    routes: { backend: ['bob'] }, review_rules: { backend: { required: true, reviewer: 'admin', notify: 'owner' } } };
+  const task = { spec: { id: 'T-SHARED', workflow: ['backend'], execution_mode: 'desktop_poll' },
+    state: { status: 'review', stage: 0, assignee: 'alice', seq: 7, epoch: 1 }, events: [{ type: 'review_requested', actor_id: 'bob', summary: 'done' }] };
+  const text = formatPeerNotification(task, 'review_requested', 'bob', team);
+  assert.equal(text.split('<@shared-owner>').length - 1, 1);
+  assert.match(text, /通知本人：bob、alice/); assert.match(text, /审核身份：alice/);
+  assert.match(text, /@ alice 对应的机器人/); assert.doesNotMatch(text, /@ bob 对应的机器人/);
+});

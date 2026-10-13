@@ -155,7 +155,7 @@
       }
     }
   },
-  "$comment": "Runtime verifies distinct Ed25519 keys and owner IDs, valid reviewer and route capabilities, and clock skew below half the lease. v3 requires a review rule for every route; specific members require a verified owner. v2 forbids review_rules so old clients cannot silently bypass gates.",
+  "$comment": "Runtime verifies distinct Ed25519 keys and valid owner IDs (several agents may share the same human owner), valid reviewer and route capabilities, and clock skew below half the lease. v3 requires a review rule for every route; specific members require a verified owner. v2 forbids review_rules so old clients cannot silently bypass gates.",
   "allOf": [
     {
       "if": {

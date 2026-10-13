@@ -17,7 +17,7 @@
 | 企微连接 | Alice 接命令；Bob 发通知 | Alice 接命令并执行；Bob 不接命令但可执行并发通知 |
 | Git | 私有本机 bare remote | 另一个私有本机 bare remote，不推送 GitHub |
 
-**Bob 的 `commands_enabled=false` 只禁用群命令入口，不禁用自动执行。** 它不需要收到 Alice Bot 的 @ 消息，直接读取 Git 中的已签名 handoff 就会接力。一个真人模拟两位 agent 时，仅把你的 userid 绑定给 Alice；Bob 不重复绑定。
+**Bob 的 `commands_enabled=false` 只禁用群命令入口，不禁用自动执行。** 它不需要收到 Alice Bot 的 @ 消息，直接读取 Git 中的已签名 handoff 就会接力。本页旧测试脚本仅给 Alice 绑定 userid，Bob 保持通知模式。新网页向导支持同一个 userid 拥有多个独立 Agent，并同时开启各机器人的群命令；模拟既有 Codex 对话接力请使用 [向导中的本人多机器人流程](onboarding.md#一个人使用多个机器人或模拟两个同事)。
 
 ## 1. 生成新的自动测试环境
 

@@ -50,6 +50,24 @@ function gitFailure(error) {
   return new SetupError('Git 无法读取远程仓库，请检查 origin 地址、Git 权限和网络后重试。');
 }
 function shellQuote(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
+function mcpSection(text, serverName) {
+  let active = false; const lines = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (/^\s*\[/.test(line)) {
+      active = line.trim() === `[mcp_servers.${serverName}]`;
+      if (active) lines.push(line);
+      continue;
+    }
+    if (active) lines.push(line);
+  }
+  return lines.join('\n');
+}
+function projectMcpConfigured(projectConfig, configPath, config) {
+  const paths = [configPath];
+  if (config.execution_mode === 'desktop_poll') paths.push(join(dirname(configPath), `${config.agent_id}-desktop-peer.json`));
+  const section = mcpSection(projectConfig, `team-collab-${config.agent_id}`);
+  return !/^\s*enabled\s*=\s*false\s*(?:#.*)?$/m.test(section) && paths.some((path) => section.includes(JSON.stringify(path)));
+}
 async function ensureRepo(path) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw new SetupError('请选择业务仓库的本机绝对路径。');
   let repo;
@@ -228,7 +246,7 @@ export class SetupManager {
         state.phase = 'configuring'; await this.save(state);
       }
       if (state.role === 'member' && ['verified', 'waiting'].includes(state.phase)) {
-        const store = await this.profileStore(state, { enrollmentOnly: true });
+        let store = await this.profileStore(state, { enrollmentOnly: true });
         if (state.phase === 'verified') {
           await store.registryTransaction(async (history) => {
             const invitation = JSON.parse(await readFile(join(store.checkout, invitationFile(state.request.invite_id)), 'utf8'));
@@ -244,6 +262,14 @@ export class SetupManager {
             return { files: [[path, state.request]], value: null };
           });
           state.phase = 'waiting'; await this.save(state);
+        }
+        if (!store.team.agents[state.agent_id] && state.own_admin_id) {
+          const admin = await this.state(state.own_admin_id);
+          const invite = state.bundle.invitation;
+          if (admin.role !== 'admin' || admin.phase !== 'ready' || admin.agent_id !== invite.actor_id || admin.root_hash !== state.root_hash ||
+            !invite.owner_userid || invite.owner_userid !== store.team.agents[admin.agent_id]?.wecom_userid || state.request.wecom_userid !== invite.owner_userid) throw new SetupError('本人机器人接入身份不一致，请通过原管理员项目继续。');
+          await this.approve({ id: admin.id, request_id: state.request.request_id });
+          store = await this.profileStore(state, { enrollmentOnly: true });
         }
         const member = store.team.agents[state.agent_id];
         const identity = await readPrivateJson(state.identity_path);
@@ -274,13 +300,19 @@ export class SetupManager {
       state.last_error = null; await this.save(state);
       return this.detail(id, { localOnly: true });
     } catch (error) {
-      state.last_error = '接入未完成，可检查 Git 权限／项目配置后点击继续。'; await this.save(state);
-      throw error;
+      state.last_error = error instanceof SetupError ? error.message : '接入未完成，可检查 Git 权限／项目配置后点击继续。'; await this.save(state);
+      if (error instanceof SetupError) throw error;
+      throw new SetupError(state.last_error);
     }
   }
   async importBundle({ content, password, repo }) {
     if (typeof content !== 'string' || content.length > 500000) throw new SetupError('请选择管理员提供的接入包。');
-    const { bundle, history } = validateBundle(decryptBundle(JSON.parse(content), password));
+    let envelope;
+    try { envelope = JSON.parse(content); } catch { throw new SetupError('接入包文件不是有效 JSON，请重新下载管理员提供的文件。'); }
+    return this.importAssignment(decryptBundle(envelope, password), repo);
+  }
+  async importAssignment(value, repo, ownAdminId) {
+    const { bundle, history } = validateBundle(value);
     const selected = await ensureRepo(repo);
     if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
     if (remoteIdentity(selected.remote) !== remoteIdentity(bundle.remote)) throw new SetupError('该目录的 origin 与邀请仓库不一致，请选择正确仓库；工具不会改写 origin。');
@@ -291,13 +323,15 @@ export class SetupManager {
     }
     const id = randomUUID(); const identity = await getOrCreateIdentityFiles(bundle.invitation.agent_id, join(this.home, 'identities'));
     const state = { id, role: 'member', agent_id: bundle.invitation.agent_id, repo: selected.repo, remote: selected.remote, identity_path: identity.private_key_file,
-      bootstrap_team: history.latest.team, root_hash: bundle.root_hash, bundle, test_argv: bundle.test_argv, phase: 'imported' };
+      bootstrap_team: history.latest.team, root_hash: bundle.root_hash, bundle, test_argv: bundle.test_argv, phase: 'imported',
+      ...(ownAdminId ? { own_admin_id: ownAdminId } : {}) };
     await this.save(state); return this.detail(id, { localOnly: true });
   }
   async verifyMember({ id, discovery_id }) {
     const state = await this.state(id); if (state.phase !== 'imported') throw new SetupError('此成员已经完成群验证。');
     const proof = this.discovery.consume(discovery_id); const invite = state.bundle.invitation;
     if (proof.bot_id !== invite.bot_id || !invite.chat_ids.includes(proof.chatid)) throw new SetupError('请使用分配的机器人和指定协作群验证。');
+    if (invite.owner_userid !== undefined && proof.userid !== invite.owner_userid) throw new SetupError('请用初始化团队时的同一个企业微信账号验证自己的新机器人。');
     const identity = await readPrivateJson(state.identity_path);
     state.request = enrollmentRequest({ invite, publicKey: createPublicKey(identity.private_key).export({ type: 'spki', format: 'pem' }), userid: proof.userid,
       chatid: proof.chatid, requestId: randomUUID(), privateKey: identity.private_key, claimPrivateKey: state.bundle.claim_private_key });
@@ -305,14 +339,16 @@ export class SetupManager {
       default_workflow: [invite.capabilities[0]] };
     state.phase = 'verified'; await this.save(state); return this.resume(id);
   }
-  async issueBundle(input) {
+  async issueBundle(input, { ownRepo } = {}) {
     const state = await this.state(input.id); if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('请先完成管理员接入。');
     const agentId = input.agent_id?.trim(); if (!idPattern.test(agentId || '') || agentId === state.agent_id) throw new SetupError('请填写要加入的成员名称。');
     const caps = capabilities(input.capabilities); const store = await this.profileStore(state);
     if (store.team.agents[agentId]) throw new SetupError('成员已存在，请复用原有接入配置。');
     if (typeof input.bot_id !== 'string' || !input.bot_id.trim() || typeof input.secret !== 'string' || !input.secret) throw new SetupError('请填写该成员机器人的 Bot ID 和 Secret。');
-    if (input.bot_id.trim() === state.wecom.bot_id) throw new SetupError('每位成员必须使用独立机器人。');
-    encryptBundle({}, input.password); // Validate password before publishing an invitation.
+    if (input.bot_id.trim() === state.wecom.bot_id) throw new SetupError('每个 Agent 必须使用独立机器人。');
+    const ownerUserid = ownRepo ? store.team.agents[state.agent_id]?.wecom_userid : undefined;
+    if (ownRepo && !ownerUserid) throw new SetupError('请先验证管理员的企业微信本人身份。');
+    if (!ownRepo) encryptBundle({}, input.password); // Validate password before publishing an invitation.
     const claim = generateIdentity(); const identity = await readPrivateJson(state.identity_path);
     const inviteId = randomUUID();
     const bundle = await store.registryTransaction(async (history) => {
@@ -325,17 +361,20 @@ export class SetupManager {
       }
       const invitation = invitationRecord({ invite_id: inviteId, agent_id: agentId, capabilities: caps,
         bot_id: input.bot_id.trim(), chat_ids: state.wecom.chat_ids, commands_enabled: input.commands_enabled !== false,
-        prefer: input.prefer !== false, claim_public_key: claim.public_key, expires_at: new Date(Date.now() + 7 * 86400000).toISOString() }, history.latest, state.agent_id, identity.private_key);
+        prefer: input.prefer !== false, claim_public_key: claim.public_key, expires_at: new Date(Date.now() + 7 * 86400000).toISOString(),
+        ...(ownRepo ? { owner_userid: ownerUserid } : {}) }, history.latest, state.agent_id, identity.private_key);
       const value = { schema_version: 1, kind: 'codex-collab-invite', root_hash: state.root_hash, remote: state.remote,
         history: history.records, invitation, claim_private_key: claim.private_key,
         wecom: { bot_id: invitation.bot_id, secret: input.secret }, test_argv: state.test_argv };
       // Save export before push: a lost acknowledgment can be retried from disk.
-      await savePrivate(join(this.path(input.id), 'exports', `${inviteId}.json`), { invitation, encrypted: encryptBundle(value, input.password) });
+      await savePrivate(join(this.path(input.id), 'exports', `${inviteId}.json`), ownRepo
+        ? { invitation, own_bundle: value, own_repo: ownRepo }
+        : { invitation, encrypted: encryptBundle(value, input.password) });
       return { files: [[invitationFile(inviteId), invitation]], value };
     });
     return { invite_id: bundle.invitation.invite_id, agent_id: agentId, filename: `${agentId}-collab-invite.json` };
   }
-  async exportedBundle(id, inviteId) {
+  async publishAssignment(id, inviteId) {
     if (!uuidPattern.test(inviteId || '')) throw new SetupError('无效邀请标识。');
     const state = await this.state(id); const bundle = await readPrivateJson(join(this.path(id), 'exports', `${inviteId}.json`));
     const store = await this.profileStore(state);
@@ -352,7 +391,42 @@ export class SetupManager {
     });
     const published = JSON.parse(await readFile(join(store.checkout, invitationFile(inviteId)), 'utf8'));
     if (canonical(published) !== canonical(bundle.invitation)) throw new SetupError('邀请尚未发布成功，请重新生成接入包。');
+    return bundle;
+  }
+  async exportedBundle(id, inviteId) {
+    const bundle = await this.publishAssignment(id, inviteId);
+    if (!bundle.encrypted) throw new SetupError('本人机器人无需下载接入包，请点击继续接入我的机器人。');
     return { content: JSON.stringify(bundle.encrypted, null, 2), filename: `${bundle.invitation.agent_id}-collab-invite.json` };
+  }
+  async createOwnAgent(input) {
+    const state = await this.state(input.id);
+    if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('请从已接入的管理员项目添加自己的机器人。');
+    const selected = await ensureRepo(input.repo);
+    if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
+    if (remoteIdentity(selected.remote) !== remoteIdentity(state.remote)) throw new SetupError('新 Agent 必须选择同一业务仓库的另一个 clone。');
+    const files = await readdir(join(this.path(input.id), 'exports')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
+    for (const file of files) {
+      const saved = await readPrivateJson(join(this.path(input.id), 'exports', file));
+      if (saved.own_bundle && saved.invitation.agent_id === input.agent_id?.trim()) {
+        if (saved.own_repo !== selected.repo || saved.invitation.bot_id !== input.bot_id?.trim()) throw new SetupError('这个 Agent 已有本人接入配置，请从已生成的配置继续。');
+        return this.resumeOwnAgent({ id: input.id, invite_id: saved.invitation.invite_id });
+      }
+    }
+    for (const profile of (await this.overview()).profiles) if (profile.repo === selected.repo) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
+    const issued = await this.issueBundle({ ...input, commands_enabled: true }, { ownRepo: selected.repo });
+    return this.resumeOwnAgent({ id: input.id, invite_id: issued.invite_id });
+  }
+  async resumeOwnAgent({ id, invite_id }) {
+    const state = await this.state(id);
+    if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('请从原管理员项目继续接入。');
+    if (!uuidPattern.test(invite_id || '')) throw new SetupError('无效邀请标识。');
+    for (const profile of (await this.overview()).profiles) {
+      const existing = await this.state(profile.id);
+      if (existing.own_admin_id === id && existing.bundle?.invitation.invite_id === invite_id) return this.detail(profile.id, { localOnly: true });
+    }
+    const saved = await this.publishAssignment(id, invite_id);
+    if (!saved.own_bundle || !saved.own_repo || saved.invitation.owner_userid !== state.bootstrap_team.agents[state.agent_id]?.wecom_userid) throw new SetupError('这不是当前管理员的本人机器人配置。');
+    return this.importAssignment(saved.own_bundle, saved.own_repo, id);
   }
   async approve({ id, request_id }) {
     if (!uuidPattern.test(request_id || '')) throw new SetupError('无效申请标识。');
@@ -390,11 +464,18 @@ export class SetupManager {
     return this.detail(id);
   }
   async detail(id, { localOnly = false } = {}) {
-    const state = await this.state(id); const result = { id, agent_id: state.agent_id, role: state.role, repo: state.repo, phase: state.phase, error: state.last_error || null };
+    const state = await this.state(id); const result = { id, agent_id: state.agent_id, role: state.role, repo: state.repo, phase: state.phase, own_agent: !!state.own_admin_id, error: state.last_error || null };
     if (state.phase === 'imported') result.assignment = { capabilities: state.bundle.invitation.capabilities, bot_id: state.bundle.invitation.bot_id,
       expires_at: state.bundle.invitation.expires_at };
     if (state.role === 'admin' && state.phase === 'ready' && !localOnly) {
-      const store = await this.profileStore(state); result.members = Object.entries(store.team.agents).map(([id, agent]) => ({ id, capabilities: agent.capabilities, role: agent.role, verified_owner: !!agent.wecom_userid }));
+      const store = await this.profileStore(state); const owners = new Map();
+      result.members = Object.entries(store.team.agents).map(([id, agent]) => {
+        if (agent.wecom_userid) {
+          const group = owners.get(agent.wecom_userid) || []; group.push(id); owners.set(agent.wecom_userid, group);
+        }
+        return { id, capabilities: agent.capabilities, role: agent.role, verified_owner: !!agent.wecom_userid };
+      });
+      result.owners = [...owners].map(([userid, agent_ids]) => ({ agent_ids, is_you: userid === store.team.agents[state.agent_id]?.wecom_userid }));
       result.routes = store.team.routes; result.review_rules = store.team.review_rules || null; result.policy_schema_version = store.team.schema_version; result.version = store.registry.latest.version; result.requests = [];
       const files = await readdir(join(store.checkout, registryPath, 'requests')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
       for (const file of files) {
@@ -411,12 +492,16 @@ export class SetupManager {
       for (const file of exported) {
         const value = await readPrivateJson(join(this.path(id), 'exports', file));
         result.exports.push({ invite_id: value.invitation.invite_id, agent_id: value.invitation.agent_id,
-          filename: `${value.invitation.agent_id}-collab-invite.json`, expires_at: value.invitation.expires_at });
+          filename: `${value.invitation.agent_id}-collab-invite.json`, expires_at: value.invitation.expires_at, own_agent: !!value.own_bundle });
       }
     }
     if (state.phase === 'ready') {
       result.config_path = state.existing_config || join(this.path(id), 'peer.json'); result.binding_prompt = bindingPrompt(state.agent_id, state.repo);
       const config = (await readPeerConfig(result.config_path)).config;
+      const skillName = config.execution_mode === 'desktop_poll' ? 'team-collab-desktop' : 'team-collab';
+      const projectConfig = await readFile(join(state.repo, '.codex', 'config.toml'), 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error));
+      const installedSkill = await readFile(join(state.repo, '.agents', 'skills', skillName, 'SKILL.md'), 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error));
+      result.project_setup = { mcp_configured: projectMcpConfigured(projectConfig, result.config_path, config), skill_installed: !!installedSkill.trim() };
       const lock = await readRunnerLock(join(config.data_dir, 'runner.pid.json'));
       result.runner = { online: !!lock && alive(lock.pid), wecom: 'offline' };
       if (result.runner.online) {
@@ -427,14 +512,21 @@ export class SetupManager {
       result.last_poll_at = result.desktop.last_poll_at || null;
       result.poll_observed = !!result.last_poll_at;
       result.poll_recent = !!result.last_poll_at && Date.now() - Date.parse(result.last_poll_at) < 180000;
-      result.can_receive_tasks = result.runner.online && result.runner.wecom === 'authenticated' && !!result.desktop.binding && result.poll_recent;
+      result.can_receive_tasks = result.project_setup.mcp_configured && result.project_setup.skill_installed && result.runner.online && result.runner.wecom === 'authenticated' && !!result.desktop.binding && result.poll_recent;
       result.heartbeat_confirmed = false;
     }
     return result;
   }
   async runner({ id, command }) {
     const state = await this.state(id); if (state.phase !== 'ready' || !['start', 'stop'].includes(command)) throw new SetupError('无效连接操作。');
-    this.runCli(command, state.existing_config || join(this.path(id), 'peer.json')); return this.detail(id, { localOnly: true });
+    try {
+      this.runCli(command, state.existing_config || join(this.path(id), 'peer.json'));
+      state.last_error = null; await this.save(state);
+    } catch {
+      state.last_error = `机器人${command === 'start' ? '启动' : '停止'}未完成，请检查本机 Runner 日志后重试。`;
+      await this.save(state); throw new SetupError(state.last_error);
+    }
+    return this.detail(id, { localOnly: true });
   }
   close() { this.discovery.closeAll(); }
 }

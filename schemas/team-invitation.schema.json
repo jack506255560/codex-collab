@@ -80,7 +80,29 @@
     "signature": {
       "type": "string",
       "minLength": 1
+    },
+    "owner_userid": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Optional owner pinned to the issuing administrator for adding their own independent agent."
     }
   },
-  "$comment": "Runtime verifies administrator signature under team_hash, Ed25519 claim key, expiry, and conflicts with existing members or assignments. No bot Secret or private keys are allowed here."
+  "$comment": "Runtime verifies administrator signature under team_hash, Ed25519 claim key, expiry, and conflicts with existing members or assignments. No bot Secret or private keys are allowed here. A self-owned invitation pins owner_userid to the issuing administrator; enrollment must prove the same account. Existing invitations without this optional field remain valid.",
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "owner_userid"
+        ]
+      },
+      "then": {
+        "properties": {
+          "commands_enabled": {
+            "const": true
+          }
+        }
+      }
+    }
+  ]
 }

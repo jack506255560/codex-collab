@@ -26,3 +26,24 @@ test('wizard APIs require local Host, matching Origin and personal cookie, rejec
   } finally { await app.close(); }
   assert.equal(closed, true);
 });
+
+
+test('own-agent endpoints enforce session and Origin before passing input to the manager', async () => {
+  const calls = [];
+  const manager = { close() {}, exclusive(fn) { return fn(); },
+    async createOwnAgent(input) { calls.push(['create', input]); return { id: 'bob', phase: 'imported' }; },
+    async resumeOwnAgent(input) { calls.push(['resume', input]); return { id: 'bob', phase: 'ready' }; } };
+  const app = await startSetupServer({ manager });
+  const post = (path, headers = {}) => fetch(`${app.origin}/api/${path}`, { method: 'POST',
+    headers: { Origin: app.origin, 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ id: 'admin', invite_id: 'invite' }) });
+  try {
+    for (const path of ['own-agent', 'own-agent-resume']) assert.equal((await post(path)).status, 401);
+    const session = await fetch(`${app.origin}/api/session`, { method: 'POST', headers: { Origin: app.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ token: app.token }) });
+    const headers = { Cookie: session.headers.get('set-cookie').split(';')[0] };
+    for (const path of ['own-agent', 'own-agent-resume']) assert.equal((await post(path, { ...headers, Origin: 'https://evil.invalid' })).status, 403);
+    assert.equal(calls.length, 0);
+    assert.deepEqual(await (await post('own-agent', headers)).json(), { id: 'bob', phase: 'imported' });
+    assert.deepEqual(await (await post('own-agent-resume', headers)).json(), { id: 'bob', phase: 'ready' });
+    assert.deepEqual(calls, [['create', { id: 'admin', invite_id: 'invite' }], ['resume', { id: 'admin', invite_id: 'invite' }]]);
+  } finally { await app.close(); }
+});

@@ -12,12 +12,13 @@ const idPattern = /^[a-zA-Z0-9_-]{1,64}$/;
 export function validateTeam(team) {
   if (![2, 3].includes(team?.schema_version) || typeof team.repo !== 'string' || !team.repo || !idPattern.test(team.default_route ?? '')) throw new Error('invalid peer team configuration');
   if (!team.agents || !team.routes || !Object.keys(team.agents).length) throw new Error('team needs agents and routes');
-  const keys = new Set(); const users = new Set();
+  const keys = new Set();
   for (const [id, agent] of Object.entries(team.agents)) {
     if (!idPattern.test(id) || !['admin', 'member'].includes(agent.role) || !Array.isArray(agent.capabilities) || agent.capabilities.some((c) => !idPattern.test(c)) || !Number.isSafeInteger(agent.max_concurrent_tasks) || agent.max_concurrent_tasks < 1 || agent.max_concurrent_tasks > 16) throw new Error(`invalid agent ${id}`);
     if (createPublicKey(agent.public_key).asymmetricKeyType !== 'ed25519' || keys.has(agent.public_key)) throw new Error('agents require distinct Ed25519 public keys');
     keys.add(agent.public_key);
-    if (agent.wecom_userid) { if (typeof agent.wecom_userid !== 'string' || users.has(agent.wecom_userid)) throw new Error('duplicate or invalid WeCom owner'); users.add(agent.wecom_userid); }
+    // An owner is a human account; several independent agents may share it.
+    if (Object.hasOwn(agent, 'wecom_userid') && (typeof agent.wecom_userid !== 'string' || !agent.wecom_userid.trim() || agent.wecom_userid.length > 200)) throw new Error('invalid WeCom owner');
   }
   if (team.agents[team.reviewer]?.role !== 'admin') throw new Error('reviewer must be an admin');
   // Reviewer is a human approval identity, not an execution exclusion. Its Runner

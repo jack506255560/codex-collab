@@ -25,7 +25,8 @@ export function resolveHuman(selector, executorId, team, reviewerId = team.revie
   if (selector === 'reviewer') return reviewerId;
   if (selector === 'admin') return team.reviewer;
   // Notification-only identities cannot send approval commands. Route their review
-  // to the administrator, including the one-human/two-bot local simulation.
+  // to the administrator. Verified agents keep their own review identity even
+  // when several agents share the same human owner.
   if (selector === 'owner') return team.agents[executorId]?.wecom_userid ? executorId : team.reviewer;
   return memberSelector.exec(selector || '')?.[1] || null;
 }

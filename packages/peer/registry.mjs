@@ -69,19 +69,21 @@ export function invitationRecord(input, record, actorId, privateKey) {
     capabilities: input.capabilities, bot_id: input.bot_id, chat_ids: input.chat_ids,
     commands_enabled: input.commands_enabled, prefer: input.prefer,
     claim_public_key: input.claim_public_key, expires_at: input.expires_at,
-    team_hash: record.team_hash, actor_id: actorId };
+    team_hash: record.team_hash, actor_id: actorId,
+    ...(input.owner_userid !== undefined ? { owner_userid: input.owner_userid } : {}) };
   const signed = signRecord(invite, privateKey);
   validateInvitation(signed, { teams: new Map([[record.team_hash, record.team]]) });
   return signed;
 }
 export function validateInvitation(invite, history) {
-  fields(invite, ['schema_version', 'invite_id', 'agent_id', 'capabilities', 'bot_id', 'chat_ids', 'commands_enabled', 'prefer', 'claim_public_key', 'expires_at', 'team_hash', 'actor_id', 'signature']);
+  fields(invite, ['schema_version', 'invite_id', 'agent_id', 'capabilities', 'bot_id', 'chat_ids', 'commands_enabled', 'prefer', 'claim_public_key', 'expires_at', 'team_hash', 'actor_id', 'signature', 'owner_userid']);
   const team = history.teams.get(invite.team_hash);
   if (invite.schema_version !== 1 || !uuidPattern.test(invite.invite_id || '') || !idPattern.test(invite.agent_id || '') || !team || team.agents[invite.actor_id]?.role !== 'admin' ||
     !Array.isArray(invite.capabilities) || !invite.capabilities.length || invite.capabilities.length > 16 || invite.capabilities.some((cap) => !idPattern.test(cap)) || new Set(invite.capabilities).size !== invite.capabilities.length ||
     typeof invite.bot_id !== 'string' || !invite.bot_id || invite.bot_id.length > 200 ||
     !Array.isArray(invite.chat_ids) || !invite.chat_ids.length || invite.chat_ids.some((id) => typeof id !== 'string' || !id || id.length > 200) ||
     typeof invite.commands_enabled !== 'boolean' || typeof invite.prefer !== 'boolean' || !Number.isFinite(Date.parse(invite.expires_at))) fail();
+  if (Object.hasOwn(invite, 'owner_userid') && (!invite.commands_enabled || typeof invite.owner_userid !== 'string' || !invite.owner_userid.trim() || invite.owner_userid.length > 200 || invite.owner_userid !== team.agents[invite.actor_id].wecom_userid)) fail();
   try { if (createPublicKey(invite.claim_public_key).asymmetricKeyType !== 'ed25519') fail(); } catch { fail(); }
   verifyRecord(invite, team.agents[invite.actor_id].public_key);
   return invite;
@@ -97,6 +99,7 @@ export function validateEnrollment(request, invite, history, { now = Date.now(),
   fields(request, ['schema_version', 'request_id', 'invite_id', 'agent_id', 'public_key', 'wecom_userid', 'chat_id', 'signature', 'invitation_signature']);
   if (request.schema_version !== 1 || !uuidPattern.test(request.request_id || '') || request.invite_id !== invite.invite_id || request.agent_id !== invite.agent_id ||
     !invite.chat_ids.includes(request.chat_id) || (invite.commands_enabled ? typeof request.wecom_userid !== 'string' || !request.wecom_userid || request.wecom_userid.length > 200 : request.wecom_userid !== null) ||
+    invite.owner_userid !== undefined && request.wecom_userid !== invite.owner_userid ||
     !allowExpired && now > Date.parse(invite.expires_at)) fail();
   const { invitation_signature, ...member } = request;
   try { if (createPublicKey(request.public_key).asymmetricKeyType !== 'ed25519') fail(); } catch { fail(); }
