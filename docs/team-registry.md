@@ -13,7 +13,7 @@
 
 ## 团队版本
 
-`schema_version: 1` 包含 `version`、`parent_hash`、`team_hash`、v2/v3 `team` 策略、`actor_id`、可选的 `enrollment` 和 Ed25519 `signature`。根的 `parent_hash` 为 null；后续记录指向前一条去掉 signature 后 canonical JSON 的 SHA-256。签名覆盖其余全部字段。
+`schema_version: 1` 包含 `version`、`parent_hash`、`team_hash`、v2/v3 `team` 策略、`actor_id`、可选的 `enrollment`、可选的 `invitation_replacement` 和 Ed25519 `signature`。根的 `parent_hash` 为 null；后续记录指向前一条去掉 signature 后 canonical JSON 的 SHA-256。签名覆盖其余全部字段。
 
 客户端通过加密接入包或明确导入的旧可信策略 pin 根 hash。本机保存最高版本与对应 hash，拒绝回滚和从已观察版本分叉。后续版本须由上一策略中的管理员签名；已有成员公钥、角色和 userid 不可偷偷替换。
 
@@ -43,6 +43,8 @@ Agent ID 与签名公钥保持独立；多个 Agent 可以使用同一个已验�
 公开邀请由管理员签名，包含成员名称、职责、机器人 Bot ID、允许的群 ID、群命令开关、首选/候补、到期时间、邀请 claim 公钥和引用的团队 hash。默认 7 天有效。“给自己增加机器人”会额外签名可选 `owner_userid`，限定为签发管理员已验证的 userid，并要求开启群命令；入队申请必须证明同一个真人账号。旧邀请不含此字段也继续有效。它不包含机器人 Secret、claim 私钥或成员私钥。
 
 成员的私钥在成员本机生成。通过群验证码得到 userid/chatid 后，申请包括成员公钥和这些公开绑定，并由成员密钥与邀请 claim 密钥分别签名。管理员核对后发布新的团队版本；版本的 enrollment 包含对应 invite_id 和 request_id。相同申请重试幂等，另一个身份复用已消费邀请会被拒绝。已经批准的同一身份恢复本机配置不受后续邀请过期影响。
+
+密码遗失的未批准邀请可由管理员重新签发：一个独立的 `invitation_replacement` 版本签名记录旧、新 invite UUID，保持 `team_hash` 不变且不能同时批准成员。验证历史时旧邀请立即进入撤销集合；之后不得再以它提交或批准入队请求。恢复包只视为发布完成当邀请和替换版本均已推送。已批准邀请不能按此方式替换。该可选字段由 `team-version.schema.json` 描述；不认识此字段的旧客户端会 fail closed，因此成员必须升级并重启 Runner/MCP 后再做恢复。
 
 管理员在本人第二个 clone 的接入流程通过群验证码证明相同账号后，自动调用同一套签名入队批准协议；新 Agent 仍为 member。普通成员的多个 Agent 仍分别提交申请并由管理员确认。
 

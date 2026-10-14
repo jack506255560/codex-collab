@@ -1,11 +1,11 @@
 const $ = (id) => document.getElementById(id);
 let currentId, pending, discovery, timer, busy = false, reviewVersion = null, reviewId, ownAdminId, resetPlan, resetDiscovery;
-let viewEpoch = 0, currentView = 'home', completing = false;
+let viewEpoch = 0, currentView = 'home', completing = false, deliveryTarget;
 const storageKey = 'codex-collab-onboarding';
 function remember(value) { try { if (value) sessionStorage.setItem(storageKey, JSON.stringify(value)); else sessionStorage.removeItem(storageKey); } catch {} }
 function remembered() { try { return JSON.parse(sessionStorage.getItem(storageKey) || 'null'); } catch { return null; } }
 function notice(text) { $('notice').textContent = text; $('notice').hidden = !text; }
-function show(view) { if (view !== 'profile' || currentView === 'profile') { $('delivery-panel').hidden = true; $('delivery-password').value = ''; $('delivery-instructions').textContent = ''; } clearInterval(timer); clearTimeout(timer); viewEpoch++; currentView = view; for (const section of document.querySelectorAll('main>section')) section.hidden = section.id !== view; }
+function show(view) { if (view !== 'profile' || currentView === 'profile') { $('delivery-panel').hidden = true; $('delivery-password').value = ''; $('delivery-instructions').textContent = ''; $('reissue-secret').value = ''; $('reissue-form').hidden = true; deliveryTarget = null; } clearInterval(timer); clearTimeout(timer); viewEpoch++; currentView = view; for (const section of document.querySelectorAll('main>section')) section.hidden = section.id !== view; }
 async function api(path, body) {
   const response = await fetch(`/api/${path}`, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
   const value = await response.json(); if (!response.ok) throw new Error(value.error); return value;
@@ -209,6 +209,7 @@ $('admin-form').onsubmit = (event) => { event.preventDefault(); action(async () 
 }); };
 async function invitationInput(form) { const input = values(form); input.content = await input.file.text(); delete input.file; return input; }
 $('inspect-invite').onclick = () => action(async () => {
+  $('invite-info').hidden = true; $('invite-summary').textContent = ''; $('invite-remote').textContent = '';
   const value = await api('inspect-invite', await invitationInput($('join-form')));
   $('invite-info').hidden = false; $('invite-summary').textContent = `${value.display_name || value.agent_id}（${value.agent_id}）· 职责：${value.capabilities.join('、')}${value.team_name ? ' · ' + value.team_name : ''}`;
   $('invite-remote').textContent = value.remote;
@@ -318,11 +319,28 @@ async function showDelivery(id, inviteId) {
   const epoch = viewEpoch, value = await api('delivery', { id, invite_id: inviteId }); if (epoch !== viewEpoch) return;
   $('delivery-title').textContent = `${value.display_name}（${value.agent_id}）的接入说明`;
   $('delivery-instructions').textContent = value.instructions; $('delivery-password').value = value.password || '';
-  $('copy-password').hidden = !value.password; $('delivery-panel').hidden = false;
+  deliveryTarget = { id, invite_id: inviteId };
+  $('delivery-password-label').hidden = !value.password; $('copy-password').hidden = !value.password;
+  $('delivery-password-note').hidden = !!value.password;
+  $('delivery-password-note').textContent = value.can_reissue ? '这份旧接入包未保存密码，无法从加密文件取回。请重新生成接入包与密码，再加入团队。' : '本机未保存这份接入包密码。成员已获批准，请使用现有配置；如需恢复，请使用原密码或更新机器人凭据。';
+  $('delivery-download').href = `/api/export?id=${id}&invite=${inviteId}`;
+  $('reissue-invite').hidden = !value.can_reissue; $('reissue-bot-id').value = value.bot_id || '';
+  $('reissue-secret').value = ''; $('reissue-form').hidden = true; $('delivery-panel').hidden = false;
 }
 $('copy-delivery').onclick = () => action(() => navigator.clipboard.writeText($('delivery-instructions').textContent));
 $('copy-password').onclick = () => action(() => navigator.clipboard.writeText($('delivery-password').value));
-$('hide-delivery').onclick = () => action(async () => { $('delivery-panel').hidden = true; $('delivery-password').value = ''; });
+$('reissue-invite').onclick = () => action(async () => { $('reissue-form').hidden = false; $('reissue-secret').value = ''; clearTimeout(timer); });
+$('reissue-cancel').onclick = () => action(async () => { $('reissue-form').hidden = true; $('reissue-secret').value = ''; watchProfile(currentId, viewEpoch); });
+$('reissue-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
+  if (!deliveryTarget || deliveryTarget.id !== currentId) throw new Error('请重新打开该机器人的接入说明。');
+  const target = { ...deliveryTarget };
+  let result;
+  try { result = await api('reissue-invite', { ...target, secret: $('reissue-secret').value }); }
+  finally { $('reissue-secret').value = ''; }
+  await loadProfile(target.id); await showDelivery(target.id, result.invite_id);
+  notice('新接入包与密码已生成，旧包已失效。请下载新文件，在“加入团队”中使用新密码。');
+}); };
+$('hide-delivery').onclick = () => action(async () => { $('delivery-panel').hidden = true; $('delivery-password').value = ''; $('reissue-secret').value = ''; $('reissue-form').hidden = true; deliveryTarget = null; watchProfile(currentId, viewEpoch); });
 assignmentRow();
 action(async () => {
   const token = location.hash.slice(1); if (token) { await api('session', { token }); history.replaceState(null, '', '/'); }

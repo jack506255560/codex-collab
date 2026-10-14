@@ -22,19 +22,19 @@ export function verifyRecord(record, publicKey) {
   return body;
 }
 export function recordHash(record) { const { signature, ...body } = record; return digest(body); }
-export function policyVersion(team, previous, actorId, privateKey, enrollment) {
+export function policyVersion(team, previous, actorId, privateKey, enrollment, invitationReplacement) {
   validateTeam(team);
   const value = { schema_version: 1, version: previous ? previous.version + 1 : 1,
     parent_hash: previous ? recordHash(previous) : null, team_hash: digest(team), team, actor_id: actorId,
-    ...(enrollment ? { enrollment } : {}) };
+    ...(enrollment ? { enrollment } : {}), ...(invitationReplacement ? { invitation_replacement: invitationReplacement } : {}) };
   return signRecord(value, privateKey);
 }
 export function validateHistory(records, rootHash) {
   if (!Array.isArray(records) || !records.length || !hashPattern.test(rootHash || '') || recordHash(records[0]) !== rootHash) fail();
-  const teams = new Map();
+  const teams = new Map(), revokedInvites = new Set(), replacementTargets = new Set(), consumedInvites = new Set();
   let previous;
   for (const record of records) {
-    fields(record, ['schema_version', 'version', 'parent_hash', 'team_hash', 'team', 'actor_id', 'enrollment', 'signature']);
+    fields(record, ['schema_version', 'version', 'parent_hash', 'team_hash', 'team', 'actor_id', 'enrollment', 'invitation_replacement', 'signature']);
     if (record.schema_version !== 1 || record.version !== (previous?.version || 0) + 1 || record.parent_hash !== (previous ? recordHash(previous) : null)) fail();
     const team = validateTeam(record.team);
     const authority = previous?.team || team;
@@ -45,13 +45,25 @@ export function validateHistory(records, rootHash) {
     if (previous) for (const [id, agent] of Object.entries(authority.agents)) {
       if (!team.agents[id] || team.agents[id].public_key !== agent.public_key || team.agents[id].role !== agent.role || team.agents[id].wecom_userid !== agent.wecom_userid) fail();
     }
+    if (record.invitation_replacement) {
+      const replacement = record.invitation_replacement;
+      fields(replacement, ['old_invite_id', 'new_invite_id']);
+      const { old_invite_id: oldId, new_invite_id: newId } = replacement;
+      if (!previous || record.enrollment || record.team_hash !== previous.team_hash ||
+        !uuidPattern.test(oldId || '') || !uuidPattern.test(newId || '') || oldId === newId ||
+        revokedInvites.has(oldId) || revokedInvites.has(newId) || replacementTargets.has(newId) ||
+        consumedInvites.has(oldId) || consumedInvites.has(newId)) fail();
+      revokedInvites.add(oldId); replacementTargets.add(newId);
+    }
     if (record.enrollment) {
+      if (revokedInvites.has(record.enrollment.invite_id)) fail();
+      consumedInvites.add(record.enrollment.invite_id);
       fields(record.enrollment, ['invite_id', 'request_id']);
       if (!uuidPattern.test(record.enrollment.invite_id || '') || !uuidPattern.test(record.enrollment.request_id || '')) fail();
     }
     teams.set(record.team_hash, team); previous = record;
   }
-  return { records, teams, latest: previous, root_hash: rootHash };
+  return { records, teams, latest: previous, root_hash: rootHash, revoked_invites: revokedInvites };
 }
 export async function readRegistry(checkout, rootHash) {
   const dir = join(checkout, registryPath, 'versions');
@@ -76,6 +88,7 @@ export function invitationRecord(input, record, actorId, privateKey) {
   return signed;
 }
 export function validateInvitation(invite, history) {
+  if (history.revoked_invites?.has(invite?.invite_id)) fail();
   fields(invite, ['schema_version', 'invite_id', 'agent_id', 'capabilities', 'bot_id', 'chat_ids', 'commands_enabled', 'prefer', 'claim_public_key', 'expires_at', 'team_hash', 'actor_id', 'signature', 'owner_userid']);
   const team = history.teams.get(invite.team_hash);
   if (invite.schema_version !== 1 || !uuidPattern.test(invite.invite_id || '') || !idPattern.test(invite.agent_id || '') || !team || team.agents[invite.actor_id]?.role !== 'admin' ||

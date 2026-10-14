@@ -64,7 +64,26 @@
     "signature": {
       "type": "string",
       "minLength": 1
+    },
+    "invitation_replacement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "old_invite_id",
+        "new_invite_id"
+      ],
+      "properties": {
+        "old_invite_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+        },
+        "new_invite_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+        }
+      },
+      "description": "Administrator replaces an unconsumed invitation. Old invitation and enrollment requests become invalid; team policy remains identical."
     }
   },
-  "$comment": "Runtime verifies pinned root hash, contiguous version and parent chain, canonical team_hash, previous-admin signature, immutable existing identities and local anti-rollback checkpoint."
+  "$comment": "Runtime verifies pinned root hash, contiguous version and parent chain, canonical team_hash, previous-admin signature, immutable existing identities and local anti-rollback checkpoint. Invitation replacement must keep the team hash unchanged, cannot accompany enrollment, and cannot revoke an approved invitation or reuse a replacement ID. Clients lacking this field fail closed and must upgrade."
 }

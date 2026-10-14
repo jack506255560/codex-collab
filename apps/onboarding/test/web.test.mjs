@@ -322,3 +322,50 @@ test('refresh restores an imported member and approval automatically opens bindi
   assert.equal(verifies, 1); assert.ok(!p.calls.includes('/api/import'));
   assert.equal(storage.get('codex-collab-onboarding'), JSON.stringify({ profile_id: 'member' }));
 });
+
+test('legacy delivery shows actionable recovery instead of an empty password, then displays the replacement', async () => {
+  const admin = { ...ownAdmin(), exports: [{ invite_id: 'old-invite', agent_id: 'bob', display_name: 'Bob', expires_at: '2026-10-20' }] };
+  const p = await page((path, input) => {
+    if (path === '/api/overview') return { profiles: [admin] };
+    if (path === '/api/profile?id=admin') return admin;
+    if (path === '/api/delivery') return { agent_id: 'bob', display_name: 'Bob', password: input.invite_id === 'old-invite' ? null : 'fixture-new-password', can_reissue: true, bot_id: 'bot-bob', instructions: 'import latest invite' };
+    if (path === '/api/reissue-invite') {
+      assert.equal(input.id, 'admin'); assert.equal(input.invite_id, 'old-invite'); assert.equal(input.secret, 'fixture-bot-secret');
+      return { invite_id: 'new-invite' };
+    }
+    assert.fail(path);
+  });
+  await p.activate(p.element('profiles').children[0].children[1]);
+  await p.activate(p.element('exports').children[0].children[1]);
+  assert.equal(p.element('delivery-password-label').hidden, true); assert.equal(p.element('copy-password').hidden, true);
+  assert.match(p.element('delivery-password-note').textContent, /未保存密码.*重新生成/);
+  assert.equal(p.element('reissue-invite').hidden, false);
+  await p.click('reissue-invite'); assert.equal(p.element('reissue-form').hidden, false);
+  assert.equal(p.element('reissue-bot-id').value, 'bot-bob'); p.element('reissue-secret').value = 'fixture-bot-secret';
+  await p.submit('reissue-form', {});
+  assert.equal(p.element('reissue-secret').value, ''); assert.equal(p.element('reissue-form').hidden, true);
+  assert.equal(p.element('delivery-password').value, 'fixture-new-password'); assert.equal(p.element('delivery-password-label').hidden, false);
+  assert.match(p.element('delivery-download').href, /invite=new-invite/); assert.match(p.element('notice').textContent, /旧包已失效/);
+  assert.doesNotMatch([...p.storage.values()].join(''), /fixture|secret|password/);
+});
+
+test('reissue failure clears secret and preserves the current delivery, and approved invites offer no reissue', async () => {
+  for (const approved of [false, true]) {
+    const admin = { ...ownAdmin(), exports: [{ invite_id: 'old-invite', agent_id: 'bob', expires_at: '2026-10-20' }] };
+    const p = await page((path) => {
+      if (path === '/api/overview') return { profiles: [admin] };
+      if (path === '/api/profile?id=admin') return admin;
+      if (path === '/api/delivery') return { agent_id: 'bob', display_name: 'Bob', password: null, can_reissue: !approved, bot_id: 'bot-bob', instructions: 'invite' };
+      if (path === '/api/reissue-invite') return new Error('Git 发布失败，请重试');
+      assert.fail(path);
+    });
+    await p.activate(p.element('profiles').children[0].children[1]); await p.activate(p.element('exports').children[0].children[1]);
+    assert.equal(p.element('reissue-invite').hidden, approved);
+    if (approved) { assert.match(p.element('delivery-password-note').textContent, /成员已获批准/); continue; }
+    await p.click('reissue-invite'); p.element('reissue-secret').value = 'fixture-bot-secret';
+    await p.submit('reissue-form', {});
+    assert.equal(p.element('reissue-secret').value, ''); assert.equal(p.element('delivery-panel').hidden, false);
+    assert.equal(p.element('notice').textContent, 'Git 发布失败，请重试');
+    await p.click('reissue-cancel'); assert.equal(p.element('reissue-form').hidden, true);
+  }
+});

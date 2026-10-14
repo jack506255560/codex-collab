@@ -87,3 +87,23 @@ test('guided routes require local session and Origin for project, draft, progres
     assert.equal(calls.length, Object.keys(names).length + 1);
   } finally { await app.close(); }
 });
+
+test('reissue endpoint requires local authenticated browser and hides unexpected credential errors', async () => {
+  const calls = [];
+  const manager = { close() {}, exclusive(fn) { return fn(); }, async reissueBundle(input) {
+    calls.push(input); if (input.secret === 'unsafe-failure-secret') throw new Error('SDK echoed unsafe-failure-secret');
+    return { invite_id: 'replacement' };
+  } };
+  const app = await startSetupServer({ manager });
+  const post = (path, input, headers = {}) => fetch(`${app.origin}/api/${path}`, { method: 'POST', headers: { Origin: app.origin, 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(input) });
+  try {
+    const input = { id: 'admin', invite_id: 'old', secret: 'fixture-secret' };
+    assert.equal((await post('reissue-invite', input)).status, 401); assert.equal(calls.length, 0);
+    const login = await post('session', { token: app.token }); const headers = { Cookie: login.headers.get('set-cookie').split(';')[0] };
+    assert.equal((await post('reissue-invite', input, { ...headers, Origin: 'https://evil.invalid' })).status, 403); assert.equal(calls.length, 0);
+    assert.deepEqual(await (await post('reissue-invite', input, headers)).json(), { invite_id: 'replacement' });
+    assert.deepEqual(calls[0], input);
+    const failed = await post('reissue-invite', { ...input, secret: 'unsafe-failure-secret' }, headers);
+    assert.equal(failed.status, 400); assert.doesNotMatch(await failed.text(), /unsafe-failure-secret|SDK/);
+  } finally { await app.close(); }
+});

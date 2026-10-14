@@ -315,6 +315,7 @@ export class SetupManager {
       }
       if (state.role === 'member' && ['verified', 'waiting'].includes(state.phase)) {
         let store = await this.profileStore(state, { enrollmentOnly: true });
+        if (store.registry.revoked_invites.has(state.bundle.invitation.invite_id)) throw new SetupError('这份接入包已被替换，请重新导入最新接入包并使用新密码。');
         if (state.phase === 'verified') {
           await store.registryTransaction(async (history) => {
             const invitation = JSON.parse(await readFile(join(store.checkout, invitationFile(state.request.invite_id)), 'utf8'));
@@ -403,12 +404,24 @@ export class SetupManager {
     const selected = await ensureRepo(repo);
     if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
     if (remoteIdentity(selected.remote) !== remoteIdentity(bundle.remote)) throw new SetupError('该目录的 origin 与邀请仓库不一致，请选择正确仓库；工具不会改写 origin。');
+    let recovered;
     for (const profile of (await this.overview()).profiles) {
       const current = await this.state(profile.id);
       if (current.bundle?.invitation.invite_id === bundle.invitation.invite_id) return this.detail(current.id, { localOnly: true });
-      if (current.repo === selected.repo) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
+      if (current.repo !== selected.repo) continue;
+      const oldId = current.bundle?.invitation.invite_id;
+      const replacement = history.records.find((record) => record.invitation_replacement?.old_invite_id === oldId && record.invitation_replacement.new_invite_id === bundle.invitation.invite_id);
+      if (!replacement || current.agent_id !== bundle.invitation.agent_id || current.root_hash !== bundle.root_hash ||
+        current.role !== 'member' || !['imported', 'verified', 'waiting'].includes(current.phase)) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
+      const latest = await this.profileStore(current, { enrollmentOnly: true });
+      if (!latest.registry.revoked_invites.has(oldId) || latest.team.agents[current.agent_id]) throw new SetupError('旧接入尚未被替换或成员已经获批准，请检查管理员配置。');
+      validateInvitation(bundle.invitation, latest.registry);
+      const published = JSON.parse(await readFile(join(latest.checkout, invitationFile(bundle.invitation.invite_id)), 'utf8'));
+      if (canonical(published) !== canonical(bundle.invitation)) throw new SetupError('仓库邀请与接入包不一致。');
+      await savePrivate(join(this.path(current.id), 'replaced-invitations', `${oldId}.json`), current);
+      recovered = current;
     }
-    const id = randomUUID(); const identity = await getOrCreateIdentityFiles(bundle.invitation.agent_id, join(this.home, 'identities'));
+    const id = recovered?.id || randomUUID(); const identity = await getOrCreateIdentityFiles(bundle.invitation.agent_id, join(this.home, 'identities'));
     const state = { id, role: 'member', agent_id: bundle.invitation.agent_id, display_name: bundle.display_name || bundle.invitation.agent_id, team_name: bundle.team_name || null, repo: selected.repo, remote: selected.remote, identity_path: identity.private_key_file,
       bootstrap_team: history.latest.team, root_hash: bundle.root_hash, bundle, test_argv: bundle.test_argv, phase: 'imported',
       ...(ownAdminId ? { own_admin_id: ownAdminId } : {}) };
@@ -449,6 +462,7 @@ export class SetupManager {
       const existing = await readdir(join(store.checkout, registryPath, 'invitations')).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error));
       for (const file of existing) {
         const invite = JSON.parse(await readFile(join(store.checkout, registryPath, 'invitations', file), 'utf8'));
+        if (history.revoked_invites.has(invite.invite_id)) continue;
         validateInvitation(invite, history);
         if (prepared.some((item) => (item.agent_id === invite.agent_id || item.bot_id === invite.bot_id) && item.invite_id !== invite.invite_id) &&
             (Date.now() < Date.parse(invite.expires_at) || history.records.some((record) => record.enrollment?.invite_id === invite.invite_id))) throw new SetupError('成员或机器人已有有效接入包，请使用已生成的文件。');
@@ -470,12 +484,65 @@ export class SetupManager {
     return { assignments: prepared.map((item) => ({ invite_id: item.invite_id, agent_id: item.agent_id,
       display_name: item.display_name, filename: `${item.agent_id}-collab-invite.json`, password: item.password })) };
   }
+  async reissueBundle({ id, invite_id, secret }) {
+    const state = await this.state(id);
+    if (state.role !== 'admin' || state.phase !== 'ready' || !uuidPattern.test(invite_id || '')) throw new SetupError('只有已接入的管理员可重新生成接入包。');
+    if (typeof secret !== 'string' || !secret.trim() || secret.length > 2000) throw new SetupError('请在本机填写该机器人的 Secret。');
+    const saved = await readPrivateJson(join(this.path(id), 'exports', `${invite_id}.json`));
+    if (!saved.encrypted || saved.own_bundle) throw new SetupError('本人机器人无需重新生成分发接入包。');
+    const store = await this.profileStore(state), identity = await readPrivateJson(state.identity_path);
+    // Persist a stable replacement before publication so retries survive a lost Git acknowledgment.
+    const directory = join(this.path(id), 'exports');
+    let candidate;
+    for (const file of await readdir(directory)) {
+      const value = await readPrivateJson(join(directory, file));
+      if (value.replaces_invite_id === invite_id) { candidate = value; break; }
+    }
+    const newId = candidate?.invitation.invite_id || randomUUID();
+    const claim = candidate ? null : generateIdentity(), password = candidate?.delivery_password || randomBytes(18).toString('base64url');
+    await store.registryTransaction(async (history) => {
+      const replacement = history.records.find((record) => record.invitation_replacement?.old_invite_id === invite_id);
+      if (replacement) {
+        if (replacement.invitation_replacement.new_invite_id !== newId || !candidate) throw new SetupError('该接入包已由其他操作替换，请刷新并使用最新接入包。');
+        const published = JSON.parse(await readFile(join(store.checkout, invitationFile(newId)), 'utf8'));
+        validateInvitation(published, history);
+        if (canonical(published) !== canonical(candidate.invitation)) throw new SetupError('恢复记录与仓库邀请不一致，请检查本机文件。');
+        return { value: null };
+      }
+      validateInvitation(saved.invitation, history);
+      if (history.latest.team.agents[saved.invitation.agent_id] || history.records.some((record) => record.enrollment?.invite_id === invite_id)) throw new SetupError('该成员已获批准，请使用原配置或更新机器人凭据，无需重新生成接入包。');
+      const originalPath = invitationFile(invite_id);
+      if (await exists(join(store.checkout, originalPath))) {
+        const original = JSON.parse(await readFile(join(store.checkout, originalPath), 'utf8'));
+        if (canonical(original) !== canonical(saved.invitation)) throw new SetupError('原接入包与仓库邀请不一致。');
+      }
+      const invitation = candidate?.invitation || invitationRecord({ ...saved.invitation, invite_id: newId,
+        claim_public_key: claim.public_key, expires_at: new Date(Date.now() + 7 * 86400000).toISOString() }, history.latest, state.agent_id, identity.private_key);
+      validateInvitation(invitation, history);
+      if (Date.now() > Date.parse(invitation.expires_at)) throw new SetupError('恢复接入包已过期，请检查本机恢复记录。');
+      const version = policyVersion(history.latest.team, history.latest, state.agent_id, identity.private_key, undefined,
+        { old_invite_id: invite_id, new_invite_id: newId });
+      // Use the latest history on CAS retries; the encryption password and claim key stay stable.
+      const previousBundle = candidate ? decryptBundle(candidate.encrypted, password) : null;
+      const bundle = { schema_version: 1, kind: 'codex-collab-invite', root_hash: state.root_hash, remote: state.remote,
+        history: [...history.records, version], invitation, claim_private_key: previousBundle?.claim_private_key || claim.private_key,
+        display_name: saved.display_name || saved.invitation.agent_id, team_name: state.team_name || null,
+        wecom: { bot_id: invitation.bot_id, secret }, test_argv: state.test_argv };
+      candidate = { invitation, display_name: bundle.display_name, encrypted: encryptBundle(bundle, password),
+        delivery_password: password, replaces_invite_id: invite_id };
+      await savePrivate(join(directory, `${newId}.json`), candidate);
+      return { files: [[invitationFile(newId), invitation], [versionFile(version), version]], value: null };
+    });
+    return { invite_id: newId, agent_id: candidate.invitation.agent_id };
+  }
   async delivery({ id, invite_id }) {
     const state = await this.state(id);
     if (state.role !== 'admin' || state.phase !== 'ready' || !uuidPattern.test(invite_id || '')) throw new SetupError('只有管理员可查看已分配的接入说明。');
     const saved = await this.publishAssignment(id, invite_id);
     if (!saved.encrypted) throw new SetupError('本人机器人直接在本机接入，无需分发接入包。');
     return { agent_id: saved.invitation.agent_id, display_name: saved.display_name || saved.invitation.agent_id, password: saved.delivery_password || null,
+      can_reissue: !saved.approved, bot_id: saved.invitation.bot_id,
+      password_missing: !saved.delivery_password,
       instructions: `已为你分配 ${saved.display_name || saved.invitation.agent_id} 协作机器人。\n1. 安装 Node.js 20 或以上版本及 Git。\n2. 执行 npx xuym-codex-collab@latest setup 打开接入向导。\n3. 导入我提供的加密接入包，使用单独发送的密码，选择已有项目或自动拉取。\n4. 按页面提示在群里确认身份；批准后自动完成配置。\n5. 在目标 Codex 项目对话发送页面提供的启用指令。` };
   }
   async issueBundle(input, { ownRepo } = {}) {
@@ -495,6 +562,7 @@ export class SetupManager {
       const files = await readdir(join(store.checkout, registryPath, 'invitations')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
       for (const file of files) {
         const existing = JSON.parse(await readFile(join(store.checkout, registryPath, 'invitations', file), 'utf8'));
+        if (history.revoked_invites.has(existing.invite_id)) continue;
         validateInvitation(existing, history);
         if (existing.invite_id === inviteId) return { value: { invitation: existing } };
         if ((existing.agent_id === agentId || existing.bot_id === input.bot_id.trim()) && (Date.now() < Date.parse(existing.expires_at) || history.records.some((record) => record.enrollment?.invite_id === existing.invite_id))) throw new SetupError('该成员或机器人已有有效接入包，请使用已生成的文件。');
@@ -518,20 +586,29 @@ export class SetupManager {
     if (!uuidPattern.test(inviteId || '')) throw new SetupError('无效邀请标识。');
     const state = await this.state(id); const bundle = await readPrivateJson(join(this.path(id), 'exports', `${inviteId}.json`));
     const store = await this.profileStore(state);
+    if (bundle.replaces_invite_id) {
+      const replacement = store.registry.records.find((record) => record.invitation_replacement?.old_invite_id === bundle.replaces_invite_id);
+      if (!replacement || replacement.invitation_replacement.new_invite_id !== inviteId || !store.registry.revoked_invites.has(bundle.replaces_invite_id)) {
+        throw new SetupError('接入包替换尚未发布到仓库，请返回原接入包并重试“重新生成”。');
+      }
+    }
     await store.registryTransaction(async (history) => {
+      if (history.revoked_invites.has(inviteId)) throw new SetupError('这份接入包已被替换，请下载最新接入包并使用新密码。');
       const path = invitationFile(inviteId); if (await exists(join(store.checkout, path))) return { value: null };
       validateInvitation(bundle.invitation, history);
       if (history.latest.team.agents[bundle.invitation.agent_id] || Date.now() > Date.parse(bundle.invitation.expires_at)) throw new SetupError('邀请已失效，请重新生成。');
       const files = await readdir(join(store.checkout, registryPath, 'invitations')).catch(() => []);
       for (const file of files) {
-        const other = JSON.parse(await readFile(join(store.checkout, registryPath, 'invitations', file), 'utf8')); validateInvitation(other, history);
+        const other = JSON.parse(await readFile(join(store.checkout, registryPath, 'invitations', file), 'utf8'));
+        if (history.revoked_invites.has(other.invite_id)) continue;
+        validateInvitation(other, history);
         if ((other.agent_id === bundle.invitation.agent_id || other.bot_id === bundle.invitation.bot_id) && (Date.now() < Date.parse(other.expires_at) || history.records.some((record) => record.enrollment?.invite_id === other.invite_id))) throw new SetupError('邀请与另一已发布的接入包冲突。');
       }
       return { files: [[path, bundle.invitation]], value: null };
     });
     const published = JSON.parse(await readFile(join(store.checkout, invitationFile(inviteId)), 'utf8'));
     if (canonical(published) !== canonical(bundle.invitation)) throw new SetupError('邀请尚未发布成功，请重新生成接入包。');
-    return bundle;
+    return { ...bundle, approved: !!store.team.agents[bundle.invitation.agent_id] };
   }
   async exportedBundle(id, inviteId) {
     const bundle = await this.publishAssignment(id, inviteId);
@@ -631,6 +708,8 @@ export class SetupManager {
       const exported = await readdir(join(this.path(id), 'exports')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
       for (const file of exported) {
         const value = await readPrivateJson(join(this.path(id), 'exports', file));
+        if (store.registry.revoked_invites.has(value.invitation.invite_id)) continue;
+        if (value.replaces_invite_id && !store.registry.records.some((record) => record.invitation_replacement?.old_invite_id === value.replaces_invite_id && record.invitation_replacement.new_invite_id === value.invitation.invite_id)) continue;
         result.exports.push({ invite_id: value.invitation.invite_id, agent_id: value.invitation.agent_id,
           filename: `${value.invitation.agent_id}-collab-invite.json`, display_name: value.display_name || value.invitation.agent_id, expires_at: value.invitation.expires_at, own_agent: !!value.own_bundle });
       }

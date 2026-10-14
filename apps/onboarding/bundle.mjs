@@ -8,6 +8,7 @@ export function encryptBundle(value, password) {
   return { schema_version: 1, kind: 'codex-collab-encrypted-invite', salt: salt.toString('base64'), iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') };
 }
 export function decryptBundle(value, password) {
+  if (typeof password !== 'string' || !password.trim()) throw new SetupError('请填写接入包密码；若管理员页面未保存密码，请由管理员重新生成接入包。');
   try {
     if (value?.schema_version !== 1 || value.kind !== 'codex-collab-encrypted-invite' || typeof password !== 'string' || password.length > 256) throw new Error();
     const salt = Buffer.from(value.salt, 'base64'), iv = Buffer.from(value.iv, 'base64'), tag = Buffer.from(value.tag, 'base64');
