@@ -8,6 +8,9 @@ const absent = async (path) => { try { await stat(path); return false; } catch (
 const readOptional = async (path) => { try { return await readFile(path, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 
 export function bindingPrompt(agentId, repo) {
+  return `使用 $team-collab-desktop，启用当前项目的团队协作，将 ${agentId} 机器人绑定到当前对话。项目：${repo}`;
+}
+export function detailedBindingPrompt(agentId, repo) {
   return `请把当前已有 Codex 对话设为 ${agentId} 的企微协作执行对话，不要新建独立执行线程。\n项目：${repo}\n读取 ${join(repo, '.agents/skills/team-collab-desktop/SKILL.md')}。\n1. 用本项目 MCP 的 get_identity 确认身份是 ${agentId}，execution_mode 是 desktop_poll；若不匹配，停止并提示重新加载 MCP。\n2. 获取当前真实对话 ID：优先使用已提供的应用上下文，或当前终端 CODEX_THREAD_ID（如果存在）；不可猜 ID 或读取/修改应用数据库。没有可用 ID 时请让我复制当前对话 ID/链接。\n3. 调用 bind_desktop_thread 绑定当前真实对话，然后用应用 automation_update 工具在当前已有对话创建一个 heartbeat：每分钟检查（仅当工具接受该周期；否则说明限制），不要创建 cron、新对话或后台 SDK。先查现有 automation，避免重复；不要修改无关 automation 或 CC Switch。\n4. heartbeat 的保存提示词必须包含 ${agentId}、当前真实 thread_id 和该 skill 路径；每次 get_identity → poll_desktop_task。job=null 且 requests 为空 时保持安静；有任务就只在本对话和返回的隔离 worktree 执行本阶段，主动续租、测试、明确提交，然后 finish_desktop_task；失败时按 skill 处理。requests 非空时按 Skill 理解群消息，调用 resolve_desktop_request 创建任务、追问或回答；使用 team_context 的现有路由、能力与默认分工，不能猜测不存在的同事。解决后再次 poll 开始工作。自然语言“通过／完成”不能代替人工审核命令。复用或更新当前对话已有的协作 heartbeat，避免重复创建。禁止启动 SDK/CLI 代替当前对话。仅新任务、结果、失败或需我操作时通知。\n5. 创建完成后立即调用一次 poll_desktop_task 验证，无任务应正常返回，不要创建测试任务。告诉我绑定身份、对话 ID 和 heartbeat 状态；若工具不可用明确说明未启用自动轮询。\n`;
 }
 

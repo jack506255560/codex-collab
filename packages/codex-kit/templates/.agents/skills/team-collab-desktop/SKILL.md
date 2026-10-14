@@ -7,11 +7,12 @@ description: Execute Git-backed collaboration stages in this bound Codex desktop
 
 ## Binding once in the intended conversation
 
-- Use this project's MCP `get_identity`; it must match the colleague this conversation represents. Never use another identity's visible MCP.
+- A request such as ‘启用当前项目协作，将机器人绑定到当前对话’ starts this binding workflow. Read the current project's generated `.codex/config.toml` to identify its `team-collab-<agent_id>` entry and private config path. Do not display secrets or modify unrelated configuration. Use that MCP's `get_identity`; verify the agent ID, project path and `execution_mode=desktop_poll`. If the project MCP is missing or stale, tell the user to trust the project and reload its MCP before continuing.
 - Obtain the actual current Codex conversation ID using a supported app context or the current shell's `CODEX_THREAD_ID` if exposed. If unavailable, ask the user for the target thread's copied ID/link. Do not guess an ID or scrape/modify app session databases.
 - Call `bind_desktop_thread(thread_id)` once. Binding is local client routing, not app-attested caller authentication. Other conversations with access to the same local credentials are not a security boundary.
-- Create a recurring **heartbeat attached to this existing conversation** using the app's automation tool. Use its supported minimum/selected interval (start with every minute when accepted). Do not create standalone cron/new SDK threads as a substitute. Keep the bound identity and thread ID in the saved prompt. Reuse/update this conversation’s existing collaboration heartbeat when present; avoid duplicate automations.
+- Inspect existing collaboration automations first. Create or update a recurring **heartbeat attached to this existing conversation** using the app's automation tool. Use its supported minimum/selected interval (start with every minute when accepted). Do not create standalone cron/new SDK threads as a substitute or modify unrelated automations or provider settings. Save a prompt containing the verified agent ID, actual bound thread ID, and absolute path to this Skill. The prompt must instruct each run to verify identity, poll, handle natural-language requests or the assigned stage according to this Skill, renew leases and report results; remain quiet when nothing actionable changes. Reuse this conversation's collaboration heartbeat to avoid duplicates.
 - If the automation tool/interval is unavailable, report that binding alone does not wake this conversation; do not claim automatic execution is enabled.
+- After configuring the heartbeat, immediately call `poll_desktop_task` with the verified thread ID and handle any returned work using the workflow below. Do not invent a test task. Report the verified agent ID, thread ID, heartbeat status and actual polling result so the local wizard can observe readiness.
 
 ## On each heartbeat
 

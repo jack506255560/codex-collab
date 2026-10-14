@@ -3,9 +3,10 @@ import { isAbsolute, resolve } from 'node:path';
 import { makeSigner, readPrivateJson, validateTeam } from '../../packages/peer/config.mjs';
 import { PeerGitStore } from '../../packages/peer/store.mjs';
 import { PeerService } from '../../packages/peer/service.mjs';
-export async function readPeerConfig(path) {
+export async function readPeerConfig(path, { allowDisabled = false } = {}) {
   if (!path) throw new Error('provide --config /absolute/path/to/private-peer.json');
   const config = await readPrivateJson(resolve(path));
+  if (config.local_disabled === true && !allowDisabled) throw new Error('此项目已移除本机接入，请通过向导恢复后重试。');
   if (config.schema_version !== 2 || ![config.repo, config.data_dir, config.team_file].every((p) => typeof p === 'string' && isAbsolute(p)) || typeof config.agent_id !== 'string') throw new Error('peer config needs v2 and absolute repo/data_dir/team_file paths');
   const team = validateTeam(JSON.parse(await readFile(config.team_file, 'utf8')));
   if (config.codex_home !== undefined && (typeof config.codex_home !== 'string' || !isAbsolute(config.codex_home))) throw new Error('codex_home must be an absolute path');

@@ -21,12 +21,14 @@ export class DesktopExecutor {
   }
   checkBinding(state, threadId) {
     this.checkMode();
+    if (state.disabled) throw new Denied('local project integration was removed; restore it in the setup wizard');
     if (!threadPattern.test(threadId || '') || state.binding?.thread_id !== threadId || state.binding.agent_id !== this.service.agentId) throw new Denied('this conversation is not the bound desktop thread');
   }
   async bind(threadId) {
     this.checkMode();
     if (!threadPattern.test(threadId || '')) throw new Conflict('provide the actual target conversation ID; do not invent an ID');
     return this.private.locked(async (state) => {
+      if (state.disabled) throw new Denied('local project integration was removed; restore it in the setup wizard');
       if (state.binding && (state.binding.thread_id !== threadId || state.binding.agent_id !== this.service.agentId)) throw new Conflict('identity is already bound; explicitly unbind before choosing another conversation');
       state.binding ||= { agent_id: this.service.agentId, thread_id: threadId, bound_at: new Date().toISOString() };
       await this.private.write(state);

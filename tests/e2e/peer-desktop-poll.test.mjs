@@ -266,7 +266,10 @@ test('desktop project attachment preserves unrelated TOML, backs up private sett
     assert.match(toml, /alice-desktop-peer.json/);
     assert.equal(JSON.parse(await readFile(out.backup, 'utf8')).config_toml, old);
     assert.equal((await stat(out.backup)).mode & 0o077, 0);
-    assert.match(await readFile(out.binding_prompt, 'utf8'), /automation_update/);
+    assert.match(await readFile(out.binding_prompt, 'utf8'), /\$team-collab-desktop.*alice.*当前对话/);
+    const skill = await readFile(join(project, '.agents/skills/team-collab-desktop/SKILL.md'), 'utf8');
+    assert.match(skill, /heartbeat attached to this existing conversation/);
+    assert.match(skill, /bind_desktop_thread/); assert.match(skill, /poll_desktop_task/);
     assert.equal(out.heartbeat_created, false);
     await assert.rejects(setupDesktopProject({ configPath: f.output.configs.alice, repo: project }), /already exists/);
     await writeFile(join(f.output.repos.bob, 'user-work.txt'), 'do not overwrite');

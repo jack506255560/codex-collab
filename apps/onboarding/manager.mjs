@@ -1,6 +1,6 @@
 import { defaultReviewRules } from '../../packages/peer/review.mjs';
 import { SetupError } from './errors.mjs';
-import { createPublicKey, randomUUID } from 'node:crypto';
+import { createPublicKey, randomBytes, randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -11,12 +11,14 @@ import { PeerGitStore, git } from '../../packages/peer/store.mjs';
 import { approveEnrollment, enrollmentRequest, invitationFile, invitationRecord, policyVersion, recordHash, registryPath, requestFile, validateEnrollment, validateHistory, validateInvitation, versionFile, readRegistry } from '../../packages/peer/registry.mjs';
 import { attachProject, buildTeamPolicy, createMemberConfig, diagnosePeer, getOrCreateIdentityFiles } from '../../scripts/peer/onboarding.mjs';
 import { installedProjectConfig, refreshProject } from '../../scripts/peer/refresh-project.mjs';
-import { bindingPrompt } from '../../scripts/peer/setup-desktop-project.mjs';
+import { bindingPrompt, detailedBindingPrompt } from '../../scripts/peer/setup-desktop-project.mjs';
 import { readPeerConfig, loadRuntime } from '../peer/runtime.mjs';
 import { DesktopExecutor } from '../peer/desktop.mjs';
 import { alive, readRunnerLock } from '../peer/process.mjs';
 import { BotDiscovery } from './discovery.mjs';
+import { ResetActions } from './reset.mjs';
 import { encryptBundle, decryptBundle, remoteIdentity } from './bundle.mjs';
+import { cloneRepository, commandArgv, memberFields, recommendTests, suggestedRepo } from './guided.mjs';
 const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
 const idPattern = /^[a-zA-Z0-9_-]{1,64}$/;
 const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -110,7 +112,7 @@ function validateBundle(value) {
 
 export class SetupManager {
   constructor({ home = join(homedir(), '.config', 'codex-collab', 'workspace'), discovery = new BotDiscovery(), runCli } = {}) {
-    this.home = resolve(home); this.discovery = discovery; this.queue = Promise.resolve();
+    this.home = resolve(home); this.discovery = discovery; this.queue = Promise.resolve(); this.resets = new ResetActions(this);
     this.runCli = runCli || ((command, config) => {
       const result = spawnSync(process.execPath, [join(packageRoot, 'bin/codex-collab.mjs'), command, config], { encoding: 'utf8', timeout: 35000, maxBuffer: 200000 });
       if (result.status !== 0) throw new Error(`本机 ${command} 操作未完成，请检查项目 Git 权限或 Runner 日志。`);
@@ -130,12 +132,18 @@ export class SetupManager {
   async overview() {
     await mkdir(join(this.home, 'profiles'), { recursive: true, mode: 0o700 });
     const entries = (await readdir(join(this.home, 'profiles'))).filter((id) => uuidPattern.test(id));
-    const profiles = [];
+    const profiles = [], removed_profiles = [];
     for (const id of entries) {
       const state = await this.state(id);
-      profiles.push({ id, agent_id: state.agent_id, role: state.role, repo: state.repo, phase: state.phase, error: state.last_error || null });
+      (state.phase === 'removed' ? removed_profiles : profiles).push({ id, agent_id: state.agent_id, role: state.role, display_name: state.display_name || state.agent_id, repo: state.repo, phase: state.phase, error: state.last_error || null });
     }
-    return { profiles };
+    const drafts = [];
+    for (const file of await readdir(join(this.home, 'drafts')).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error))) {
+      if (!uuidPattern.test(file.replace(/\.json$/, ''))) continue;
+      const draft = await readPrivateJson(join(this.home, 'drafts', file));
+      if (!draft.profile_id) drafts.push({ id: draft.id, agent_id: draft.input.agent_id, display_name: draft.input.display_name, repo: draft.input.repo });
+    }
+    return { profiles, removed_profiles, drafts };
   }
   async checkBotAvailable(botId) {
     for (const profile of (await this.overview()).profiles) {
@@ -148,6 +156,7 @@ export class SetupManager {
     let credentials = input;
     if (input.profile_id) {
       const state = await this.state(input.profile_id);
+      if (state.discovery_id && !input.reconnect) { try { const session = this.discovery.view(state.discovery_id); if (!['failed', 'expired', 'disconnected'].includes(session.status)) return session; } catch {} }
       if (!state.bundle) throw new SetupError('此项目没有待验证的接入包。');
       credentials = { ...state.bundle.wecom, chat_ids: state.bundle.invitation.chat_ids };
     }
@@ -163,11 +172,57 @@ export class SetupManager {
         } catch (error) { if (error instanceof SetupError) throw error; }
       }
     }
-    return this.discovery.begin(credentials);
+    const session = this.discovery.begin(credentials);
+    if (input.profile_id) { const state = await this.state(input.profile_id); state.discovery_id = session.id; await this.save(state); }
+    return session;
   }
-  async createAdmin(input) {
-    const agentId = input.agent_id?.trim(); if (!idPattern.test(agentId || '')) throw new SetupError('请填写有效的成员名称。');
-    const caps = capabilities(input.capabilities); const argv = testArgv(input.test_argv || ['sh', 'test.sh']);
+  async prepareProject(input) {
+    const path = input.repo_mode === 'clone'
+      ? await cloneRepository({ remote: input.remote, destination: input.destination, privateHome: this.home }) : input.repo;
+    const selected = await ensureRepo(path);
+    if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
+    return { ...selected, tests: await recommendTests(selected.repo) };
+  }
+  draftPath(id) { if (!uuidPattern.test(id || '')) throw new SetupError('无效创建记录。'); return join(this.home, 'drafts', `${id}.json`); }
+  async prepareAdmin(input) {
+    const fields = memberFields(input);
+    if (typeof input.bot_id !== 'string' || !input.bot_id.trim() || typeof input.secret !== 'string' || !input.secret.trim()) throw new SetupError('请填写机器人 Bot ID 和 Secret。');
+    if (input.team_name != null && (typeof input.team_name !== 'string' || input.team_name.length > 80 || /[\x00-\x1f\x7f]/.test(input.team_name))) throw new SetupError('团队名称最多 80 个字符。');
+    const argv = input.test_command ? commandArgv(input.test_command) : testArgv(input.test_argv);
+    const selected = await this.prepareProject(input);
+    for (const profile of (await this.overview()).profiles) if (profile.repo === selected.repo) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
+    const draft = { id: randomUUID(), input: { ...fields, repo: selected.repo, test_argv: argv, team_name: input.team_name?.trim() || null,
+      bot_id: input.bot_id, secret: input.secret } };
+    await savePrivate(this.draftPath(draft.id), draft);
+    return this.adminDraft({ id: draft.id });
+  }
+  async adminDraft({ id, reconnect = false }) {
+    const draft = await readPrivateJson(this.draftPath(id));
+    if (draft.profile_id) return { profile: await this.detail(draft.profile_id, { localOnly: true }) };
+    let session;
+    if (draft.discovery_id && !reconnect) { try { session = this.discovery.view(draft.discovery_id); if (['failed', 'expired', 'disconnected'].includes(session.status)) session = null; } catch {} }
+    if (!session) {
+      session = await this.beginDiscovery({ bot_id: draft.input.bot_id, secret: draft.input.secret, repo: draft.input.repo });
+      draft.discovery_id = session.id; await savePrivate(this.draftPath(id), draft);
+    }
+    return { ...session, draft_id: id, agent_id: draft.input.agent_id, repo: draft.input.repo };
+  }
+  async completeAdmin({ draft_id, discovery_id }) {
+    const draft = await readPrivateJson(this.draftPath(draft_id));
+    if (draft.profile_id) return this.detail(draft.profile_id, { localOnly: true });
+    if (draft.discovery_id !== discovery_id) throw new SetupError('请使用当前创建流程的群验证码。');
+    return this.createAdmin({ ...draft.input, discovery_id }, { onSaved: async (id) => {
+      draft.profile_id = id; delete draft.input.secret; await savePrivate(this.draftPath(draft_id), draft);
+    } });
+  }
+  async progress({ id, sync = false }) {
+    const state = await this.state(id);
+    if (['initializing', 'verified', 'waiting', 'configuring'].includes(state.phase) && !state.last_error) return this.resume(id);
+    return this.detail(id, { localOnly: !sync || state.phase !== 'ready' });
+  }
+  async createAdmin(input, { onSaved } = {}) {
+    const fields = memberFields(input), agentId = fields.agent_id;
+    const caps = fields.capabilities; const argv = input.test_command ? commandArgv(input.test_command) : testArgv(input.test_argv || ['sh', 'test.sh']);
     const { repo, remote } = await ensureRepo(input.repo);
     if (inside(repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
     for (const profile of (await this.overview()).profiles) if (profile.repo === repo) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
@@ -179,10 +234,11 @@ export class SetupManager {
       routes: Object.fromEntries(caps.map((cap) => [cap, [agentId]])) });
     team.schema_version = 3; team.review_rules = defaultReviewRules(team.routes);
     const record = policyVersion(team, null, agentId, (await readPrivateJson(identity.private_key_file)).private_key);
-    const state = { id, role: 'admin', agent_id: agentId, repo, remote, identity_path: identity.private_key_file, bootstrap_team: team,
+    const state = { id, role: 'admin', agent_id: agentId, display_name: fields.display_name, team_name: input.team_name || null, repo, remote, identity_path: identity.private_key_file, bootstrap_team: team,
       root_hash: recordHash(record), genesis: record, test_argv: argv,
       wecom: { bot_id: proof.bot_id, secret: proof.secret, chat_ids: [proof.chatid], commands_enabled: true, allow_admin_commands: true }, phase: 'initializing' };
     await this.save(state);
+    if (onSaved) await onSaved(id);
     return this.resume(id);
   }
   async importExisting({ config_path }) {
@@ -240,6 +296,7 @@ export class SetupManager {
   }
   async resume(id) {
     const state = await this.state(id);
+    if (state.phase === 'removed') throw new SetupError('该项目已移除，请从首页恢复接入。');
     try {
       if (state.role === 'admin' && state.phase === 'initializing') {
         const bootstrap = new PeerGitStore({ repo: state.repo, dataDir: join(this.path(id), 'data'), team: state.bootstrap_team, agentId: state.agent_id,
@@ -319,11 +376,27 @@ export class SetupManager {
       throw new SetupError(state.last_error);
     }
   }
-  async importBundle({ content, password, repo }) {
+  readBundle({ content, password }) {
     if (typeof content !== 'string' || content.length > 500000) throw new SetupError('请选择管理员提供的接入包。');
     let envelope;
     try { envelope = JSON.parse(content); } catch { throw new SetupError('接入包文件不是有效 JSON，请重新下载管理员提供的文件。'); }
-    return this.importAssignment(decryptBundle(envelope, password), repo);
+    return validateBundle(decryptBundle(envelope, password)).bundle;
+  }
+  async inspectBundle(input) {
+    const bundle = this.readBundle(input), invite = bundle.invitation;
+    return { agent_id: invite.agent_id, display_name: bundle.display_name || invite.agent_id, team_name: bundle.team_name || null,
+      remote: bundle.remote, capabilities: invite.capabilities, bot_id: invite.bot_id, suggested_repo: suggestedRepo(bundle.remote, invite.agent_id) };
+  }
+  async importBundle(input) {
+    const bundle = this.readBundle(input);
+    // An interrupted import resumes its original profile without making another clone.
+    for (const profile of (await this.overview()).profiles) {
+      const state = await this.state(profile.id);
+      if (state.bundle?.invitation.invite_id === bundle.invitation.invite_id) return this.detail(profile.id, { localOnly: true });
+    }
+    const repo = input.repo_mode === 'clone'
+      ? await cloneRepository({ remote: bundle.remote, destination: input.destination || suggestedRepo(bundle.remote, bundle.invitation.agent_id), privateHome: this.home }) : input.repo;
+    return this.importAssignment(bundle, repo);
   }
   async importAssignment(value, repo, ownAdminId) {
     const { bundle, history } = validateBundle(value);
@@ -336,13 +409,13 @@ export class SetupManager {
       if (current.repo === selected.repo) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
     }
     const id = randomUUID(); const identity = await getOrCreateIdentityFiles(bundle.invitation.agent_id, join(this.home, 'identities'));
-    const state = { id, role: 'member', agent_id: bundle.invitation.agent_id, repo: selected.repo, remote: selected.remote, identity_path: identity.private_key_file,
+    const state = { id, role: 'member', agent_id: bundle.invitation.agent_id, display_name: bundle.display_name || bundle.invitation.agent_id, team_name: bundle.team_name || null, repo: selected.repo, remote: selected.remote, identity_path: identity.private_key_file,
       bootstrap_team: history.latest.team, root_hash: bundle.root_hash, bundle, test_argv: bundle.test_argv, phase: 'imported',
       ...(ownAdminId ? { own_admin_id: ownAdminId } : {}) };
     await this.save(state); return this.detail(id, { localOnly: true });
   }
   async verifyMember({ id, discovery_id }) {
-    const state = await this.state(id); if (state.phase !== 'imported') throw new SetupError('此成员已经完成群验证。');
+    const state = await this.state(id); if (state.phase !== 'imported') return this.detail(id, { localOnly: true });
     const proof = this.discovery.consume(discovery_id); const invite = state.bundle.invitation;
     if (proof.bot_id !== invite.bot_id || !invite.chat_ids.includes(proof.chatid)) throw new SetupError('请使用分配的机器人和指定协作群验证。');
     if (invite.owner_userid !== undefined && proof.userid !== invite.owner_userid) throw new SetupError('请用初始化团队时的同一个企业微信账号验证自己的新机器人。');
@@ -353,7 +426,60 @@ export class SetupManager {
       default_workflow: [invite.capabilities[0]] };
     state.phase = 'verified'; await this.save(state); return this.resume(id);
   }
+  async issueBatch({ id, members }) {
+    const state = await this.state(id);
+    if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('请先完成管理员接入。');
+    if (!Array.isArray(members) || !members.length || members.length > 25) throw new SetupError('每次请分配 1 到 25 个机器人。');
+    const store = await this.profileStore(state), identity = await readPrivateJson(state.identity_path);
+    const ids = new Set([state.agent_id]), bots = new Set([state.wecom.bot_id]);
+    const prepared = members.map((input) => {
+      const fields = memberFields(input);
+      if (ids.has(fields.agent_id) || store.team.agents[fields.agent_id]) throw new SetupError(`成员 ${fields.agent_id} 已存在或在本次分配中重复。`);
+      if (typeof input.bot_id !== 'string' || !input.bot_id.trim() || typeof input.secret !== 'string' || !input.secret.trim()) throw new SetupError('请为每位成员填写独立机器人的 Bot ID 和 Secret。');
+      const botId = input.bot_id.trim();
+      if (bots.has(botId)) throw new SetupError('本次分配的机器人重复；每个 Agent 必须使用独立机器人。');
+      ids.add(fields.agent_id); bots.add(botId);
+      const password = input.password || randomBytes(18).toString('base64url');
+      encryptBundle({}, password); // Validate the whole batch before any invitation is published.
+      return { ...fields, bot_id: botId, secret: input.secret, commands_enabled: input.commands_enabled !== false,
+        prefer: input.prefer !== false, password, claim: generateIdentity(), invite_id: randomUUID() };
+    });
+    await store.registryTransaction(async (history) => {
+      for (const item of prepared) if (history.latest.team.agents[item.agent_id]) throw new SetupError(`成员 ${item.agent_id} 已存在，请刷新工作台。`);
+      const existing = await readdir(join(store.checkout, registryPath, 'invitations')).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error));
+      for (const file of existing) {
+        const invite = JSON.parse(await readFile(join(store.checkout, registryPath, 'invitations', file), 'utf8'));
+        validateInvitation(invite, history);
+        if (prepared.some((item) => (item.agent_id === invite.agent_id || item.bot_id === invite.bot_id) && item.invite_id !== invite.invite_id) &&
+            (Date.now() < Date.parse(invite.expires_at) || history.records.some((record) => record.enrollment?.invite_id === invite.invite_id))) throw new SetupError('成员或机器人已有有效接入包，请使用已生成的文件。');
+      }
+      const files = [];
+      for (const item of prepared) {
+        const invitation = invitationRecord({ invite_id: item.invite_id, agent_id: item.agent_id, capabilities: item.capabilities,
+          bot_id: item.bot_id, chat_ids: state.wecom.chat_ids, commands_enabled: item.commands_enabled, prefer: item.prefer,
+          claim_public_key: item.claim.public_key, expires_at: new Date(Date.now() + 7 * 86400000).toISOString() }, history.latest, state.agent_id, identity.private_key);
+        const bundle = { schema_version: 1, kind: 'codex-collab-invite', root_hash: state.root_hash, remote: state.remote,
+          history: history.records, invitation, claim_private_key: item.claim.private_key, display_name: item.display_name, team_name: state.team_name || null,
+          wecom: { bot_id: item.bot_id, secret: item.secret }, test_argv: state.test_argv };
+        await savePrivate(join(this.path(id), 'exports', `${item.invite_id}.json`), { invitation, display_name: item.display_name,
+          encrypted: encryptBundle(bundle, item.password), delivery_password: item.password });
+        files.push([invitationFile(item.invite_id), invitation]);
+      }
+      return { files, value: null };
+    });
+    return { assignments: prepared.map((item) => ({ invite_id: item.invite_id, agent_id: item.agent_id,
+      display_name: item.display_name, filename: `${item.agent_id}-collab-invite.json`, password: item.password })) };
+  }
+  async delivery({ id, invite_id }) {
+    const state = await this.state(id);
+    if (state.role !== 'admin' || state.phase !== 'ready' || !uuidPattern.test(invite_id || '')) throw new SetupError('只有管理员可查看已分配的接入说明。');
+    const saved = await this.publishAssignment(id, invite_id);
+    if (!saved.encrypted) throw new SetupError('本人机器人直接在本机接入，无需分发接入包。');
+    return { agent_id: saved.invitation.agent_id, display_name: saved.display_name || saved.invitation.agent_id, password: saved.delivery_password || null,
+      instructions: `已为你分配 ${saved.display_name || saved.invitation.agent_id} 协作机器人。\n1. 安装 Node.js 20 或以上版本及 Git。\n2. 执行 npx xuym-codex-collab@latest setup 打开接入向导。\n3. 导入我提供的加密接入包，使用单独发送的密码，选择已有项目或自动拉取。\n4. 按页面提示在群里确认身份；批准后自动完成配置。\n5. 在目标 Codex 项目对话发送页面提供的启用指令。` };
+  }
   async issueBundle(input, { ownRepo } = {}) {
+    if (!ownRepo) return (await this.issueBatch({ id: input.id, members: [input] })).assignments[0];
     const state = await this.state(input.id); if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('请先完成管理员接入。');
     const agentId = input.agent_id?.trim(); if (!idPattern.test(agentId || '') || agentId === state.agent_id) throw new SetupError('请填写要加入的成员名称。');
     const caps = capabilities(input.capabilities); const store = await this.profileStore(state);
@@ -478,7 +604,7 @@ export class SetupManager {
     return this.detail(id);
   }
   async detail(id, { localOnly = false } = {}) {
-    const state = await this.state(id); const result = { id, agent_id: state.agent_id, role: state.role, repo: state.repo, phase: state.phase, own_agent: !!state.own_admin_id, error: state.last_error || null };
+    const state = await this.state(id); const result = { id, agent_id: state.agent_id, display_name: state.display_name || state.agent_id, team_name: state.team_name || null, role: state.role, repo: state.repo, phase: state.phase, own_agent: !!state.own_admin_id, error: state.last_error || null };
     if (state.phase === 'imported') result.assignment = { capabilities: state.bundle.invitation.capabilities, bot_id: state.bundle.invitation.bot_id,
       expires_at: state.bundle.invitation.expires_at };
     if (state.role === 'admin' && state.phase === 'ready' && !localOnly) {
@@ -506,11 +632,11 @@ export class SetupManager {
       for (const file of exported) {
         const value = await readPrivateJson(join(this.path(id), 'exports', file));
         result.exports.push({ invite_id: value.invitation.invite_id, agent_id: value.invitation.agent_id,
-          filename: `${value.invitation.agent_id}-collab-invite.json`, expires_at: value.invitation.expires_at, own_agent: !!value.own_bundle });
+          filename: `${value.invitation.agent_id}-collab-invite.json`, display_name: value.display_name || value.invitation.agent_id, expires_at: value.invitation.expires_at, own_agent: !!value.own_bundle });
       }
     }
     if (state.phase === 'ready') {
-      result.config_path = state.existing_config || join(this.path(id), 'peer.json'); result.binding_prompt = bindingPrompt(state.agent_id, state.repo);
+      result.config_path = state.existing_config || join(this.path(id), 'peer.json'); result.binding_prompt = bindingPrompt(state.agent_id, state.repo); result.detailed_binding_prompt = detailedBindingPrompt(state.agent_id, state.repo);
       const config = (await readPeerConfig(result.config_path)).config;
       const skillName = config.execution_mode === 'desktop_poll' ? 'team-collab-desktop' : 'team-collab';
       const projectConfig = await readFile(join(state.repo, '.codex', 'config.toml'), 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error));
@@ -534,13 +660,19 @@ export class SetupManager {
   async runner({ id, command }) {
     const state = await this.state(id); if (state.phase !== 'ready' || !['start', 'stop'].includes(command)) throw new SetupError('无效连接操作。');
     try {
+      if (command === 'start' && [...this.discovery.sessions.values()].some((session) => session.bot_id === state.wecom?.bot_id && ['connecting', 'authenticated'].includes(session.status))) throw new SetupError('机器人正在验证，请先取消验证，再启动连接。');
       this.runCli(command, state.existing_config || join(this.path(id), 'peer.json'));
       state.last_error = null; await this.save(state);
-    } catch {
+    } catch (error) {
+      if (error instanceof SetupError) throw error;
       state.last_error = `机器人${command === 'start' ? '启动' : '停止'}未完成，请检查本机 Runner 日志后重试。`;
       await this.save(state); throw new SetupError(state.last_error);
     }
     return this.detail(id, { localOnly: true });
   }
+  resetPreview(input) { return this.resets.preview(input); }
+  resetDiscovery(input) { return this.resets.discover(input); }
+  resetCancel(input) { return this.resets.cancel(input); }
+  reset(input) { return this.resets.apply(input); }
   close() { this.discovery.closeAll(); }
 }

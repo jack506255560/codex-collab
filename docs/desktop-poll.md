@@ -138,7 +138,7 @@ sh test.sh 要通过，完成后在群里发总结。
 已有绑定不需要重新创建身份。先处理正在执行的任务，再对每个 Agent 用其**项目 MCP 实际使用的私有配置路径**操作：
 
 ```sh
-npm install --global xuym-codex-collab@0.4.0
+npm install --global xuym-codex-collab@0.4.1
 codex-collab stop /absolute/private-peer.json
 codex-collab refresh-project /absolute/private-peer.json
 codex-collab start /absolute/private-peer.json

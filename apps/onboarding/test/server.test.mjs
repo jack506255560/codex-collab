@@ -47,3 +47,43 @@ test('own-agent endpoints enforce session and Origin before passing input to the
     assert.deepEqual(calls, [['create', { id: 'admin', invite_id: 'invite' }], ['resume', { id: 'admin', invite_id: 'invite' }]]);
   } finally { await app.close(); }
 });
+
+test('reset endpoints require browser session and exact Origin; private failures are sanitized', async () => {
+  const calls = []; const manager = { close() {}, exclusive(fn) { return fn(); },
+    async resetPreview(input) { calls.push(['preview', input]); return { preview_token: 'fixture-token' }; },
+    async resetDiscovery(input) { calls.push(['discovery', { ...input, secret: '[redacted]' }]); throw new Error('PRIVATE-SECRET'); },
+    async reset(input) { calls.push(['reset', input]); return { done: true }; },
+    async resetCancel(input) { calls.push(['cancel', input]); return { cancelled: true }; } };
+  const app = await startSetupServer({ manager }); const body = { id: 'profile', kind: 'project', preview_token: 'fixture-token', confirmation: 'alice' };
+  const post = (path, headers = {}, input = body) => fetch(`${app.origin}/api/${path}`, { method: 'POST', headers: { Origin: app.origin, 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(input) });
+  try {
+    for (const path of ['reset-preview', 'reset-discovery', 'reset', 'reset-cancel']) assert.equal((await post(path)).status, 401);
+    const session = await post('session', {}, { token: app.token }); const headers = { Cookie: session.headers.get('set-cookie').split(';')[0] };
+    for (const path of ['reset-preview', 'reset-discovery', 'reset', 'reset-cancel']) assert.equal((await post(path, { ...headers, Origin: 'https://evil.invalid' })).status, 403);
+    assert.equal(calls.length, 0);
+    assert.deepEqual(await (await post('reset-preview', headers)).json(), { preview_token: 'fixture-token' });
+    assert.deepEqual(await (await post('reset', headers)).json(), { done: true });
+    const failed = await post('reset-discovery', headers, { ...body, secret: 'PRIVATE-SECRET' }); assert.equal(failed.status, 400); assert.doesNotMatch(await failed.text(), /PRIVATE-SECRET/);
+    assert.deepEqual(await (await post('reset-cancel', headers)).json(), { cancelled: true });
+    assert.equal(calls.length, 4);
+  } finally { await app.close(); }
+});
+
+test('guided routes require local session and Origin for project, draft, progress, batch and delivery operations', async () => {
+  const calls = [], names = { 'project-check': 'prepareProject', 'admin-prepare': 'prepareAdmin', 'admin-complete': 'completeAdmin', 'admin-retry': 'adminDraft', 'inspect-invite': 'inspectBundle', progress: 'progress', 'issue-batch': 'issueBatch', delivery: 'delivery' };
+  const manager = { close() {}, exclusive(fn) { return fn(); } };
+  for (const method of Object.values(names)) manager[method] = async (input) => { calls.push([method, input]); return { ok: true }; };
+  const app = await startSetupServer({ manager });
+  const post = (path, headers = {}) => fetch(`${app.origin}/api/${path}`, { method: 'POST', headers: { Origin: app.origin, 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ id: 'fixture' }) });
+  try {
+    for (const path of Object.keys(names)) assert.equal((await post(path)).status, 401);
+    assert.equal((await fetch(`${app.origin}/api/admin-draft?id=fixture`)).status, 401);
+    const session = await fetch(`${app.origin}/api/session`, { method: 'POST', headers: { Origin: app.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ token: app.token }) });
+    const Cookie = session.headers.get('set-cookie').split(';')[0];
+    for (const path of Object.keys(names)) assert.equal((await post(path, { Cookie, Origin: 'https://evil.invalid' })).status, 403);
+    assert.equal(calls.length, 0);
+    for (const path of Object.keys(names)) assert.equal((await post(path, { Cookie })).status, 200);
+    assert.equal((await fetch(`${app.origin}/api/admin-draft?id=fixture`, { headers: { Cookie } })).status, 200);
+    assert.equal(calls.length, Object.keys(names).length + 1);
+  } finally { await app.close(); }
+});

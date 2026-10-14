@@ -237,8 +237,9 @@ test('refresh upgrades a known legacy Skill, preserves other settings/resources 
     assert.equal(backup.config_toml, before); assert.equal(backup.skill, original);
     assert.equal((await stat(result.backup)).mode & 0o777, 0o600);
     assert.equal((await stat(result.binding_prompt)).mode & 0o777, 0o600);
-    assert.match(await readFile(result.binding_prompt, 'utf8'), /resolve_desktop_request/);
-    assert.match(await readFile(result.binding_prompt, 'utf8'), /已有.*heartbeat|更新.*heartbeat/);
+    assert.match(await readFile(result.binding_prompt, 'utf8'), /\$team-collab-desktop.*绑定到当前对话/);
+    assert.match(await readFile(f.skill, 'utf8'), /resolve_desktop_request/);
+    assert.match(await readFile(f.skill, 'utf8'), /heartbeat/);
     assert.ok((await readFile(f.mcp_config, 'utf8')).startsWith(unrelated));
     assert.match(await readFile(f.skill, 'utf8'), /natural-language request interpretation/);
     assert.equal(await readFile(join(references, 'peer.md'), 'utf8'), 'Keep this local reference.');

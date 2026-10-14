@@ -6,16 +6,18 @@ import vm from 'node:vm';
 // Run the shipped event handlers with a minimal DOM; full form interaction is also
 // exercised in the browser audit. These tests guard recovery and API sequencing.
 class Element {
-  constructor(id) { this.id = id; this.hidden = false; this.children = []; this.dataset = {}; this.textContent = ''; }
-  append(...children) { this.children.push(...children); }
+  constructor(id) { this.id = id; this.hidden = false; this.children = []; this.dataset = {}; this.textContent = ''; this.value = ''; this.tagName = id; this.elements = {}; this.checked = false; }
+  append(...children) { for (const child of children) child.parent = this; this.children.push(...children); }
   prepend(...children) { this.children.unshift(...children); }
   replaceChildren(...children) { this.children = children; }
-  querySelectorAll() { return []; }
+  remove() { this.parent.children = this.parent.children.filter((child) => child !== this); }
+  querySelectorAll(selector) { const nodes = this.children.flatMap((child) => [child, ...child.querySelectorAll('*')]); return selector === '*' ? nodes : selector === '[data-field]' ? nodes.filter((child) => child.dataset.field) : nodes.filter((child) => child.tagName === selector); }
+  querySelector(selector) { return this.querySelectorAll('*').find((child) => selector === `[data-field="${child.dataset.field}"]`); }
 }
-async function page(route) {
-  const ids = new Map(), calls = [];
+async function page(route, storage = new Map()) {
+  const ids = new Map(), calls = [], timers = new Map(); let timerId = 0;
   const element = (id) => { if (!ids.has(id)) ids.set(id, new Element(id)); return ids.get(id); };
-  const sections = ['home', 'admin', 'join', 'own', 'existing', 'verification', 'profile'].map(element);
+  const sections = ['home', 'admin', 'join', 'own', 'existing', 'verification', 'profile', 'reset-view'].map(element);
   const context = vm.createContext({
     document: { getElementById: element, createElement: (tag) => new Element(tag), querySelectorAll: (selector) => selector === 'main>section' ? sections : [] },
     FormData: class { constructor(form) { return Object.entries(form.input)[Symbol.iterator](); } },
@@ -25,12 +27,14 @@ async function page(route) {
       return { ok: !(value instanceof Error), json: async () => value instanceof Error ? { error: value.message } : value };
     },
     location: { hash: '' }, history: { replaceState() {} }, navigator: { clipboard: { async writeText() {} } },
-    setInterval: () => 1, clearInterval() {},
+    setInterval: (fn) => { timers.set(++timerId, fn); return timerId; }, clearInterval: (id) => timers.delete(id),
+    setTimeout: (fn) => { timers.set(++timerId, fn); return timerId; }, clearTimeout: (id) => timers.delete(id),
+    sessionStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
   });
   vm.runInContext(await readFile(new URL('../web/app.js', import.meta.url), 'utf8'), context);
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   await settle();
-  return { element, calls, settle, activate: async (node) => { node.onclick(); await settle(); }, submit: async (id, input) => {
+  return { element, calls, settle, storage, context, tick: async () => { const next = timers.entries().next().value; if (next) { timers.delete(next[0]); await next[1](); await settle(); } }, activate: async (node) => { node.onclick(); await settle(); }, submit: async (id, input) => {
     const target = { input, elements: Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { value, checked: value === true }])) };
     element(id).onsubmit({ preventDefault() {}, target }); await settle(); return target;
   }, click: async (id) => { element(id).onclick(); await settle(); } };
@@ -90,8 +94,9 @@ test('administrator failure recovers new persisted profile despite canonical pat
   const created = { id: 'new', agent_id: 'alice', role: 'admin', repo: '/private/fixture/project', phase: 'configuring' };
   const p = await page((path) => {
     if (path === '/api/overview') return { profiles: persisted ? [old, created] : [old] };
-    if (path.startsWith('/api/discovery')) return { id: 'discovery', status: 'verified', message: '协作 接入 123456' };
-    if (path === '/api/admin') { persisted = true; return new Error('接入中断'); }
+    if (path === '/api/admin-prepare' || path.startsWith('/api/discovery')) return { id: 'discovery', draft_id: 'draft', status: 'verified', message: '协作 接入 123456' };
+    if (path === '/api/admin-complete') { persisted = true; return new Error('接入中断'); }
+    if (path === '/api/admin-draft?id=draft') return { profile: created };
     if (path === '/api/profile?id=new') return created;
     assert.fail(path);
   });
@@ -101,15 +106,11 @@ test('administrator failure recovers new persisted profile despite canonical pat
   assert.match(p.element('notice').textContent, /接入中断.*继续接入/);
 });
 
-test('invalid test argv is rejected before connecting a bot or sending credentials', async () => {
-  for (const test_argv of ['bad json', '{}', '[]', '[1]', '[""]', '["npm",null]']) {
-    const p = await page((path) => path === '/api/overview' ? { profiles: [] } : assert.fail(`unexpected ${path}`));
-    await p.submit('admin-form', { repo: '/fixture', agent_id: 'alice', capabilities: 'backend', test_argv, bot_id: 'fixture', secret: 'fixture' });
-    assert.match(p.element('notice').textContent, /JSON 字符串数组/);
-    assert.deepEqual(p.calls, ['/api/overview']);
-  }
+test('invalid admin test command is rejected server-side before starting a bot', async () => {
+  const p = await page((path) => path === '/api/overview' ? { profiles: [] } : path === '/api/admin-prepare' ? new Error('请确认验证命令') : assert.fail(path));
+  await p.submit('admin-form', { repo: '/fixture', display_name: 'Alice', test_command: '', bot_id: 'fixture', secret: 'fixture' });
+  assert.match(p.element('notice').textContent, /验证命令/); assert.ok(!p.calls.includes('/api/discovery'));
 });
-
 
 const ownAdmin = (exports = []) => ({ id: 'admin', agent_id: 'alice', role: 'admin', repo: '/fixture/alice', phase: 'ready', exports,
   owners: [{ agent_ids: ['alice'], is_you: true }] });
@@ -172,4 +173,152 @@ test('resuming a ready own bot opens its saved profile without reconnecting veri
   await p.activate(p.element('exports').children[0].children[1]);
   assert.equal(p.element('profile-title').textContent, 'bob · 成员');
   assert.ok(!p.calls.includes('/api/discovery')); assert.equal(p.element('notice').textContent, '');
+});
+
+const resetPreview = (kind) => ({ id: 'member', kind, agent_id: 'bob', repo: '/fixture/bob', title: '重置', preview_token: 'preview', effects: ['fixture effect'], requires_pause: ['project', 'conversation'].includes(kind) });
+async function resetPage(extra) {
+  return page((path, input) => {
+    if (path === '/api/overview') return { profiles: [member('ready')] };
+    if (path.startsWith('/api/profile?')) return member('ready');
+    if (path === '/api/reset-preview') return resetPreview(input.kind);
+    return extra(path, input);
+  });
+}
+async function openMember(p) { await p.activate(p.element('profiles').children[0].children[1]); }
+
+test('web reset previews effects before confirmation and requires exact name and paused heartbeat', async () => {
+  const received = []; const p = await resetPage((path, input) => { if (path === '/api/reset') { received.push(input); return { id: 'member', kind: 'conversation', message: 'done', backup_path: '/fixture/backup' }; } assert.fail(path); });
+  await openMember(p); await p.click('reset-conversation'); assert.equal(p.element('reset-view').hidden, false); assert.equal(p.element('reset-effects').children[0].textContent, 'fixture effect');
+  p.element('reset-confirmation').value = 'wrong'; await p.submit('reset-form', {}); assert.match(p.element('notice').textContent, /Agent 名称/); assert.equal(received.length, 0);
+  p.element('reset-confirmation').value = 'bob'; await p.submit('reset-form', {}); assert.match(p.element('notice').textContent, /暂停/); assert.equal(received.length, 0);
+  p.element('reset-paused').checked = true; await p.submit('reset-form', {}); assert.equal(received.length, 1); assert.equal(received[0].preview_token, 'preview'); assert.equal(received[0].heartbeat_paused, true); assert.equal(p.element('profile').hidden, false);
+});
+
+test('web robot update clears Secret after discovery and saves only after verified group proof', async () => {
+  const received = []; let verified = false;
+  const p = await resetPage((path, input) => {
+    if (path === '/api/reset-discovery') { received.push(input); return { id: 'proof', status: 'authenticated', message: '协作 接入 123456' }; }
+    if (path === '/api/discovery?id=proof') return { id: 'proof', status: verified ? 'verified' : 'authenticated' };
+    if (path === '/api/reset') { received.push(input); return { id: 'member', kind: 'robot', message: 'saved', backup_path: '/fixture/backup' }; }
+    assert.fail(path);
+  });
+  await openMember(p); await p.click('reset-robot'); assert.equal(p.element('reset-pause-label').hidden, true);
+  p.element('reset-secret').value = 'fixture-new-secret'; await p.click('reset-connect'); assert.equal(p.element('reset-secret').value, ''); assert.equal(p.element('reset-code').textContent, '协作 接入 123456');
+  p.element('reset-confirmation').value = 'bob'; await p.submit('reset-form', {}); assert.equal(received.length, 1); assert.match(p.element('notice').textContent, /验证码/);
+  verified = true; await p.submit('reset-form', {}); assert.equal(received.length, 2); assert.equal(received[1].discovery_id, 'proof'); assert.equal(received[1].secret, undefined);
+});
+
+test('web cancellation cancels the exact preview and restores the profile without resetting', async () => {
+  const calls = []; const p = await resetPage((path, input) => { calls.push([path, input]); if (path === '/api/reset-cancel') return { cancelled: true }; assert.fail(path); });
+  await openMember(p); await p.click('reset-project'); await p.click('reset-cancel'); assert.equal(p.element('profile').hidden, false); assert.equal(calls.length, 1); assert.equal(calls[0][1].preview_token, 'preview');
+});
+
+test('web restoration is available from the removed projects list', async () => {
+  const p = await page((path, input) => {
+    if (path === '/api/overview') return { profiles: [], removed_profiles: [member('removed')] };
+    if (path === '/api/reset-preview') { assert.equal(input.kind, 'restore'); return resetPreview('restore'); }
+    assert.fail(path);
+  });
+  assert.equal(p.element('removed-projects').hidden, false); await p.activate(p.element('removed-profiles').children[0].children[1]);
+  assert.equal(p.element('reset-view').hidden, false); assert.equal(p.element('reset-pause-label').hidden, true); assert.equal(p.element('reset-submit').textContent, '确认恢复');
+});
+
+test('verified group proof automatically advances once without a Continue click', async () => {
+  let verifies = 0;
+  const p = await page((path) => {
+    if (path === '/api/overview') return { profiles: [] };
+    if (path === '/api/import') return member('imported');
+    if (path.startsWith('/api/discovery')) return { id: 'proof', status: 'verified', message: '协作 接入 123456' };
+    if (path === '/api/verify') { verifies++; return member('waiting'); }
+    if (path === '/api/profile?id=member' || path === '/api/progress') return member('waiting');
+    assert.fail(path);
+  });
+  await p.submit('join-form', importInput()); await p.tick();
+  assert.equal(p.element('profile').hidden, false); assert.equal(verifies, 1); await p.tick(); assert.equal(verifies, 1);
+  assert.equal(p.element('setup-steps').children.length, 6);
+  assert.match(p.element('next-step').textContent, /自动等待管理员/);
+  assert.doesNotMatch([...p.storage.values()].join(''), /password|fixture-password|secret/);
+});
+
+test('automatic profile refresh keeps unsaved review form edits across policy updates', async () => {
+  let version = 1;
+  const profile = () => ({ ...ownAdmin(), version, routes: { backend: ['alice'] }, requests: [], members: [], binding_prompt: 'short', detailed_binding_prompt: 'long' });
+  const p = await page((path) => {
+    if (path === '/api/overview') return { profiles: [profile()] };
+    if (path === '/api/profile?id=admin' || path === '/api/progress') return profile();
+    assert.fail(path);
+  });
+  await p.activate(p.element('profiles').children[0].children[1]);
+  const rules = p.element('review-rules').children[0]; rules.querySelector('[data-field="required"]').checked = false;
+  await p.tick(); assert.equal(p.element('review-rules').children[0], rules); assert.equal(rules.querySelector('[data-field="required"]').checked, false);
+  version = 2; await p.tick(); assert.equal(p.element('review-rules').children[0], rules); assert.match(p.element('review-policy-note').textContent, /编辑已保留/);
+  assert.equal(p.element('binding-text').textContent, 'short'); assert.equal(p.element('binding-details').textContent, 'long');
+});
+
+test('refresh restores a draft using only its identifier and resumes proof automatically', async () => {
+  const storage = new Map([['codex-collab-onboarding', JSON.stringify({ draft_id: 'draft' })]]);
+  const p = await page((path) => {
+    if (path === '/api/overview') return { profiles: [], drafts: [{ id: 'draft', agent_id: 'alice' }] };
+    if (path === '/api/admin-draft?id=draft' || path === '/api/discovery?id=proof') return { id: 'proof', draft_id: 'draft', status: 'verified', message: '协作 接入 123456' };
+    if (path === '/api/admin-complete' || path === '/api/profile?id=admin') return ownAdmin();
+    assert.fail(path);
+  }, storage);
+  assert.equal(p.element('verification').hidden, false); await p.tick(); assert.equal(p.element('profile').hidden, false);
+  assert.equal(JSON.parse(storage.get('codex-collab-onboarding')).profile_id, 'admin');
+});
+
+test('a delayed automatic response cannot replace a different selected profile', async () => {
+  let release;
+  const alice = ownAdmin(); const bob = member('ready');
+  const p = await page((path) => {
+    if (path === '/api/overview') return { profiles: [alice, bob] };
+    if (path === '/api/profile?id=admin') return alice;
+    if (path === '/api/profile?id=member') return bob;
+    if (path === '/api/progress') return new Promise((resolve) => { release = () => resolve(alice); });
+    assert.fail(path);
+  });
+  await p.activate(p.element('profiles').children[0].children[1]); const pendingTick = p.tick(); await p.settle();
+  await p.activate(p.element('profiles').children[1].children[1]); release(); await pendingTick;
+  assert.equal(p.element('profile-title').textContent, 'bob · 成员');
+});
+
+test('batch rows submit explicit flags and reveal passwords only through delivery', async () => {
+  const p = await page((path, input) => {
+    if (path === '/api/overview') return { profiles: [ownAdmin()] };
+    if (path === '/api/profile?id=admin') return ownAdmin();
+    if (path === '/api/issue-batch') {
+      assert.equal(input.members.length, 1); assert.equal(input.members[0].display_name, 'Bob'); assert.equal(input.members[0].prefer, false);
+      return { assignments: [{ agent_id: 'bob', invite_id: 'invite' }] };
+    }
+    if (path === '/api/delivery') return { agent_id: 'bob', display_name: 'Bob', password: 'fixture-delivery-password', instructions: 'import invite' };
+    assert.fail(path);
+  });
+  await p.activate(p.element('profiles').children[0].children[1]);
+  const row = p.element('assignment-rows').children[0];
+  row.querySelector('[data-field="display_name"]').value = 'Bob'; row.querySelector('[data-field="secret"]').value = 'fixture-bot-secret'; row.querySelector('[data-field="prefer"]').checked = false;
+  await p.submit('batch-form', {}); assert.equal(p.element('delivery-password').value, 'fixture-delivery-password');
+  assert.equal(p.element('assignment-rows').children[0].querySelector('[data-field="secret"]').value, '');
+  assert.doesNotMatch([...p.storage.values()].join(''), /password|secret/); await p.click('hide-delivery'); assert.equal(p.element('delivery-password').value, '');
+});
+
+
+test('refresh restores an imported member and approval automatically opens binding instructions', async () => {
+  const storage = new Map([['codex-collab-onboarding', JSON.stringify({ profile_id: 'member' })]]);
+  let phase = 'imported', approved = false, verifies = 0;
+  const profile = () => ({ ...member(phase), display_name: 'Bob', binding_prompt: 'enable Bob', detailed_binding_prompt: 'details' });
+  const p = await page((path) => {
+    if (path === '/api/overview') return { profiles: [profile()] };
+    if (path === '/api/profile?id=member') return profile();
+    if (path.startsWith('/api/discovery')) return { id: 'proof', status: 'verified', message: '协作 接入 123456' };
+    if (path === '/api/verify') { verifies++; phase = 'waiting'; return profile(); }
+    if (path === '/api/progress') { if (approved) phase = 'ready'; return profile(); }
+    assert.fail(path);
+  }, storage);
+  assert.equal(p.element('verification').hidden, false);
+  await p.tick(); assert.equal(verifies, 1); assert.match(p.element('next-step').textContent, /自动等待管理员/);
+  await p.tick(); assert.equal(p.element('binding').hidden, true);
+  approved = true; await p.tick(); assert.equal(p.element('binding').hidden, false);
+  assert.equal(p.element('binding-text').textContent, 'enable Bob'); assert.equal(p.element('profile-title').textContent, 'Bob（bob） · 成员');
+  assert.equal(verifies, 1); assert.ok(!p.calls.includes('/api/import'));
+  assert.equal(storage.get('codex-collab-onboarding'), JSON.stringify({ profile_id: 'member' }));
 });

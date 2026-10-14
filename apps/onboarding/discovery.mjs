@@ -40,5 +40,9 @@ export class BotDiscovery {
     this.sessions.delete(id); clearTimeout(state.timer); state.client.disconnect();
     return { bot_id: state.bot_id, secret: state.secret, ...state.proof };
   }
+  cancel(id) {
+    const state = this.sessions.get(id); if (!state) return;
+    this.sessions.delete(id); clearTimeout(state.timer); state.client.disconnect();
+  }
   closeAll() { for (const state of this.sessions.values()) { clearTimeout(state.timer); state.client.disconnect(); } this.sessions.clear(); }
 }
