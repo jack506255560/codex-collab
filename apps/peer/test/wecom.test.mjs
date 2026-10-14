@@ -96,7 +96,7 @@ function naturalDispatchFixture(overrides = {}) {
   const requestId = `N-${'A'.repeat(32)}`;
   const service = {
     agentId: 'alice', store: {},
-    team: { agents: { alice: { role: 'member', wecom_userid: 'alice-user' }, admin: { role: 'admin', wecom_userid: 'admin-user' } } },
+    team: { agents: { alice: { role: 'member', wecom_userid: 'alice-user' }, bob: { role: 'member', wecom_userid: 'bob-user' }, admin: { role: 'admin', wecom_userid: 'admin-user' } } },
     async receiveRequest(input) { calls.push(input); return { spec: { id: requestId }, state: { status: 'pending', task_id: null } }; },
     async report() { assert.fail('natural prose must never mutate human approval'); }
   };
@@ -115,12 +115,15 @@ test('natural WeCom intake validates bot, group and sender; strips only the rece
   assert.equal(await dispatchPeerWecom(f.frame(), f), true);
   assert.deepEqual(f.calls[0], { chatId: 'group', messageId: 'message-1', senderId: 'alice-user', content: '给 greet.sh 增加 --upper，@Bob 补测试。', allowAdmin: false });
   assert.match(f.replies[0], /等待绑定的 Codex 对话轮询/);
+  const colleague = f.frame({ msgid: 'message-bob', from: { userid: 'bob-user' } });
+  assert.equal(await dispatchPeerWecom(colleague, f), true, 'an enrolled colleague can send a natural-language request to this bot');
+  assert.equal(f.calls[1].senderId, 'bob-user'); assert.equal(f.calls[1].allowAdmin, false);
   const disabled = naturalDispatchFixture({ commands_enabled: false });
   assert.equal(await dispatchPeerWecom(disabled.frame(), disabled), false); assert.equal(disabled.calls.length, 0);
   const admin = f.frame({ from: { userid: 'admin-user' } });
   assert.equal(await dispatchPeerWecom(admin, f), false);
   f.config.allow_admin_commands = true;
-  assert.equal(await dispatchPeerWecom(admin, f), true); assert.equal(f.calls[1].allowAdmin, true);
+  assert.equal(await dispatchPeerWecom(admin, f), true); assert.equal(f.calls[2].allowAdmin, true);
 });
 
 test('natural intake explains unsupported mode and malformed commands; human review remains explicit', async () => {

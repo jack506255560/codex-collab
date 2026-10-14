@@ -217,11 +217,12 @@ test('natural inbox authenticates, signs and deduplicates exact messages', async
     const alice = await f.make('alice', 'alice-data'); const bob = await f.make('bob', 'bob-data');
     await assert.rejects(alice.receiveRequest({ ...groupRequest('unauthorized'), senderId: 'outsider' }), /not authorized/);
     await assert.rejects(bob.receiveRequest(groupRequest('admin')), /not authorized/);
-    const request = await alice.receiveRequest(groupRequest('natural'));
+    const request = await alice.receiveRequest({ ...groupRequest('natural'), senderId: 'bob-user' });
     assert.equal(request.state.status, 'pending'); assert.equal(request.state.seq, 1);
-    assert.equal((await alice.receiveRequest(groupRequest('natural'))).spec.id, request.spec.id);
+    assert.equal((await alice.receiveRequest({ ...groupRequest('natural'), senderId: 'bob-user' })).spec.id, request.spec.id);
     assert.equal((await alice.listRequests()).length, 1);
-    await assert.rejects(alice.receiveRequest(groupRequest('natural', '另一个需求')), /different content/);
+    await assert.rejects(alice.receiveRequest({ ...groupRequest('natural', '另一个需求'), senderId: 'bob-user' }), /different content/);
+    assert.equal(request.spec.admin_dispatch, false, 'ordinary members do not gain administrator dispatch authority');
     assert.equal((await bob.receiveRequest({ ...groupRequest('admin'), allowAdmin: true })).spec.admin_dispatch, true);
     const tampered = structuredClone(request.events); tampered[0].spec_hash = 'a'.repeat(64);
     assert.throws(() => reduceInbox(request.spec, tampered, f.team), /signature/);

@@ -37,10 +37,12 @@ export async function dispatchPeerWecom(frame, { service, config, reply }) {
   const sender = body.from?.userid;
   const owner = !!sender && sender === service.team.agents[service.agentId]?.wecom_userid;
   const admin = config.allow_admin_commands === true && !!sender && Object.values(service.team.agents).some((agent) => agent.role === 'admin' && agent.wecom_userid === sender);
+  const member = !!sender && Object.values(service.team.agents).some((agent) => agent.role === 'member' && agent.wecom_userid === sender);
   // Shared owners do not merge agent roles: the receiving bot selects its signer.
-  // Admins may dispatch/query via a member bot. Review mutations must be signed by
-  // the human reviewer's own identity, never by impersonating another member.
-  if (!owner && !(admin && ['create', 'status', 'natural'].includes(command?.action || 'natural'))) return false;
+  // Enrolled team members may submit work to any bot; review/control mutations
+  // still require the bot owner. Admin dispatch retains its explicit config gate.
+  const dispatchOnly = ['create', 'status', 'natural'].includes(command?.action || 'natural');
+  if (!owner && !(dispatchOnly && (member || admin))) return false;
   const key = `wecom:${body.chatid}:${body.msgid}`;
   let text;
   try {
@@ -57,7 +59,7 @@ export async function dispatchPeerWecom(frame, { service, config, reply }) {
       if (config.execution_mode !== 'desktop_poll') {
         await reply(frame, '自然语言任务需要绑定已有 Codex 对话，并启用 desktop_poll 轮询。'); return true;
       }
-      const request = await service.receiveRequest({ chatId: body.chatid, messageId: body.msgid, senderId: sender, content, allowAdmin: config.allow_admin_commands === true });
+      const request = await service.receiveRequest({ chatId: body.chatid, messageId: body.msgid, senderId: sender, content, allowAdmin: admin });
       text = request.state.task_id ? `该消息已创建任务 ${request.state.task_id}，不会重复创建。`
         : request.state.status === 'answered' ? '这条消息已处理。'
         : request.state.status === 'clarification' ? `需求 ${request.spec.id} 等待你补充说明，请查看群里的追问。`

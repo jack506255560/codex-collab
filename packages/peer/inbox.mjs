@@ -9,8 +9,10 @@ const fields = (value, allowed) => value && typeof value === 'object' && !Array.
 export function validateInboxSpec(spec, team) {
   if (!fields(spec, ['schema_version', 'id', 'repo', 'target_agent', 'chat_id', 'sender_id', 'content', 'message_key', 'admin_dispatch']) || spec.schema_version !== 1 || !inboxIdPattern.test(spec.id || '') || spec.repo !== team.repo || !text(spec.target_agent, 64) || !/^[a-zA-Z0-9_-]+$/.test(spec.target_agent) || !Object.hasOwn(team.agents, spec.target_agent) || !text(spec.chat_id, 200) || !text(spec.sender_id, 200) || !text(spec.content, 4000) || !text(spec.message_key, 300) || typeof spec.admin_dispatch !== 'boolean' || spec.id !== `N-${digest([spec.target_agent, spec.message_key]).slice(0, 32).toUpperCase()}`) throw new Error('invalid natural-language inbox specification');
   const owner = team.agents[spec.target_agent].wecom_userid === spec.sender_id;
-  const admin = spec.admin_dispatch && Object.values(team.agents).some((agent) => agent.role === 'admin' && agent.wecom_userid === spec.sender_id);
-  if (!owner && !admin) throw new Denied('only the bot owner or an authorized team administrator may submit requests');
+  const senders = Object.values(team.agents).filter((agent) => agent.wecom_userid === spec.sender_id);
+  const member = senders.some((agent) => agent.role === 'member');
+  const admin = spec.admin_dispatch && senders.some((agent) => agent.role === 'admin');
+  if (!owner && !member && !admin) throw new Denied('only the bot owner or an enrolled team member may submit requests');
 }
 
 /** Append-only requests: only the receiving agent signs interpretation/replies. */

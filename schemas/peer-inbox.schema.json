@@ -59,5 +59,5 @@
       "type": "boolean"
     }
   },
-  "$comment": "Runtime also verifies the repo and target against the pinned team, a deterministic request ID derived from target_agent and message_key, and bot-owner or allowed administrator authorization. The original group request is shared in Git; private Codex transcripts, bindings and credentials stay local."
+  "$comment": "Runtime also verifies the repo and target against the pinned team, a deterministic request ID derived from target_agent and message_key, and authorization by the bot owner, an enrolled team member, or an explicitly allowed administrator. The original group request is shared in Git; private Codex transcripts, bindings and credentials stay local."
 }

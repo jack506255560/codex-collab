@@ -24,8 +24,10 @@ export class PeerService {
     const key = inboxMessageKey(this.agentId, chatId, messageId);
     return this.store.transactInbox(key, (requests) => {
       const owner = this.team.agents[this.agentId]?.wecom_userid === senderId;
-      const admin = allowAdmin && Object.values(this.team.agents).some((agent) => agent.role === 'admin' && agent.wecom_userid === senderId);
-      if (!senderId || !owner && !admin) throw new Denied('sender is not authorized for this bot');
+      const senderAgents = Object.values(this.team.agents).filter((agent) => agent.wecom_userid === senderId);
+      const member = senderAgents.some((agent) => agent.role === 'member');
+      const admin = allowAdmin && senderAgents.some((agent) => agent.role === 'admin');
+      if (!senderId || !owner && !member && !admin) throw new Denied('sender is not authorized for this bot');
       const referencedId = content.match(/\bN-[A-F0-9]{32}\b/)?.[0];
       const mine = requests.filter((request) => request.spec.target_agent === this.agentId && request.spec.chat_id === chatId && request.spec.sender_id === senderId);
       const waiting = mine.filter((request) => request.state.status === 'clarification');
@@ -41,8 +43,10 @@ export class PeerService {
       const original = event.type === 'received' ? request.spec.content : event.content;
       if (request.spec.chat_id !== chatId || request.spec.sender_id !== senderId || original !== content) throw new Conflict('group message ID already used with different content or sender');
       const owner = this.team.agents[this.agentId]?.wecom_userid === senderId;
-      const admin = allowAdmin && Object.values(this.team.agents).some((agent) => agent.role === 'admin' && agent.wecom_userid === senderId);
-      if (!owner && !admin) throw new Denied('sender is not authorized for this bot');
+      const senderAgents = Object.values(this.team.agents).filter((agent) => agent.wecom_userid === senderId);
+      const member = senderAgents.some((agent) => agent.role === 'member');
+      const admin = allowAdmin && senderAgents.some((agent) => agent.role === 'admin');
+      if (!owner && !member && !admin) throw new Denied('sender is not authorized for this bot');
     } });
   }
   async resolveRequest(id, expectedSeq, resolution, { defaultWorkflow } = {}) {
