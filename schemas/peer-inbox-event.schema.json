@@ -61,7 +61,8 @@
         "clarified",
         "replied",
         "task_created",
-        "answered"
+        "answered",
+        "reviewed"
       ]
     },
     "spec_hash": {
@@ -88,9 +89,29 @@
     },
     "task_id": {
       "type": "string",
-      "pattern": "^T-[A-F0-9]{32}$"
+      "pattern": "^T-[A-Z0-9-]{1,62}$"
     },
     "task_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "review_seq": {
+      "type": "integer",
+      "minimum": 2
+    },
+    "decision": {
+      "enum": [
+        "approved",
+        "changes_requested"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "task_event_hash": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
     }
@@ -131,6 +152,26 @@
             "required": [
               "task_id"
             ]
+          },
+          {
+            "required": [
+              "review_seq"
+            ]
+          },
+          {
+            "required": [
+              "decision"
+            ]
+          },
+          {
+            "required": [
+              "summary"
+            ]
+          },
+          {
+            "required": [
+              "task_event_hash"
+            ]
           }
         ]
       }
@@ -170,6 +211,26 @@
             "required": [
               "task_id"
             ]
+          },
+          {
+            "required": [
+              "review_seq"
+            ]
+          },
+          {
+            "required": [
+              "decision"
+            ]
+          },
+          {
+            "required": [
+              "summary"
+            ]
+          },
+          {
+            "required": [
+              "task_event_hash"
+            ]
           }
         ]
       }
@@ -205,6 +266,26 @@
             "required": [
               "task_id"
             ]
+          },
+          {
+            "required": [
+              "review_seq"
+            ]
+          },
+          {
+            "required": [
+              "decision"
+            ]
+          },
+          {
+            "required": [
+              "summary"
+            ]
+          },
+          {
+            "required": [
+              "task_event_hash"
+            ]
           }
         ]
       }
@@ -213,6 +294,9 @@
       "properties": {
         "type": {
           "const": "task_created"
+        },
+        "task_id": {
+          "pattern": "^T-[A-F0-9]{32}$"
         }
       },
       "required": [
@@ -235,6 +319,26 @@
           {
             "required": [
               "spec_hash"
+            ]
+          },
+          {
+            "required": [
+              "review_seq"
+            ]
+          },
+          {
+            "required": [
+              "decision"
+            ]
+          },
+          {
+            "required": [
+              "summary"
+            ]
+          },
+          {
+            "required": [
+              "task_event_hash"
             ]
           }
         ]
@@ -275,10 +379,84 @@
             "required": [
               "task_id"
             ]
+          },
+          {
+            "required": [
+              "review_seq"
+            ]
+          },
+          {
+            "required": [
+              "decision"
+            ]
+          },
+          {
+            "required": [
+              "summary"
+            ]
+          },
+          {
+            "required": [
+              "task_event_hash"
+            ]
           }
         ]
       }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "reviewed"
+        }
+      },
+      "required": [
+        "task_id",
+        "review_seq",
+        "decision",
+        "task_event_hash",
+        "response"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "required": [
+              "message_key"
+            ]
+          },
+          {
+            "required": [
+              "spec_hash"
+            ]
+          },
+          {
+            "required": [
+              "task_hash"
+            ]
+          }
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "decision": {
+                "const": "changes_requested"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "summary"
+            ]
+          }
+        }
+      ]
     }
   ],
-  "$comment": "Runtime also verifies Ed25519 signatures and historical team hash, receiving-agent authorship, exact sequence, unique IDs and idempotency keys, nondecreasing UTC timestamps, signed spec digest and allowed transitions. received opens pending; clarified waits for a reply; replied returns to pending; task_created and answered resolve pending. A task_created event and its desktop_poll task commit atomically; runtime validates the exact task digest, deterministic task ID, original group, creator and creation key. Replies are scoped to the same bot, group and sender."
+  "$comment": "Runtime also verifies Ed25519 signatures and historical team hash, receiving-agent authorship, exact sequence, unique IDs and idempotency keys, nondecreasing UTC timestamps, signed spec digest and allowed transitions. received opens pending; clarified waits for a reply; replied returns to pending; task_created and answered resolve pending. A task_created event and its desktop_poll task commit atomically; runtime validates the exact task digest, deterministic task ID, original group, creator and creation key. Replies are scoped to the same bot, group and sender. reviewed resolves a pending request and atomically appends the matching task reviewed event. Runtime verifies frozen context, explicit owner consent, pinned reviewer, unchanged code revision and the signed task-event digest; task_created keeps the deterministic inbox-derived task ID constraint."
 }

@@ -55,7 +55,7 @@ pnpm peer:create-identity bob /abs/private/bob.private.json
 
 创建脚本不会覆盖已存在的私钥、身份或团队文件。默认 route 候选按声明顺序包含所有具备能力的 agent（包括 reviewer）；要让 frontend 优先 Alice、backend 优先 Bob，在**首次创建任务前**设好对应 `routes` 的顺序。之后团队策略被事件签名固定，不能原地修改。
 
-reviewer 管理员身份可以同时运行代码，但 `PeerRunner` 和 agent-facing MCP 都不提供批准/完成操作，最后仍由真人使用群命令或 CLI 显式审核。
+reviewer 管理员身份可以同时运行代码；`PeerRunner` 和 agent-facing MCP 不提供独立的自主批准/完成操作。真人使用群命令或 CLI 显式审核；`desktop_poll` 还可经由签名群请求转达明确的真人自然语言审核决定。
 
 ## 每位同事初始化本机配置
 
@@ -150,9 +150,11 @@ export PATH="$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node
 你负责前端，Bob 补接口和测试，完成后在群里告诉我。
 ```
 
-Runner 保存签名需求，已有 Codex 对话轮询后理解并调用 `resolve_desktop_request` 创建任务、追问或回答。分工必须匹配已配置路由；需求不清时直接 @原机器人补充，多条追问时附 N-ID。确认后沿用原租约、候补和审核流程；详见 [自然语言入口与升级](desktop-poll.md#已有项目启用自然语言入口)。本入口不支持 SDK 自动模式，SDK 仍使用明确命令。
+Runner 保存签名需求，已有 Codex 对话轮询后理解并调用 `resolve_desktop_request` 创建任务、追问、回答或转达真人审核。分工必须匹配已配置路由；需求不清时直接 @原机器人补充，多条追问时附 N-ID。确认后沿用原租约、候补和审核流程；详见 [自然语言入口与升级](desktop-poll.md#已有项目启用自然语言入口)。本入口不支持 SDK 自动模式，SDK 仍使用明确命令。
 
-以下明确命令同时兼容两种模式；审核/完成由真人执行，自然语言文字不代替它们：
+`desktop_poll` 的指定审核人还可 @自己的机器人说“通过，继续下一步”或“先别通过，安装步骤再补一下”。多任务或意见不明确时先追问；只审核收到消息时固定的版本，退回须有具体意见。团队须统一升级工具并重启 Runner/MCP、刷新 Skill/heartbeat 才能使用新审核记录。
+
+以下明确命令同时兼容两种模式；完成仍由管理员执行：
 
 ```text
 @机器人 协作 创建 [frontend>backend] 增加登录页 | npm test 通过;登录页可访问

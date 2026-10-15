@@ -57,7 +57,46 @@
     },
     "admin_dispatch": {
       "type": "boolean"
+    },
+    "review_context": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "expected_seq",
+          "title",
+          "commit",
+          "stage"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^T-[A-Z0-9-]{1,62}$"
+          },
+          "expected_seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "\\S"
+          },
+          "commit": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{40}$"
+          },
+          "stage": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
     }
   },
-  "$comment": "Runtime also verifies the repo and target against the pinned team, a deterministic request ID derived from target_agent and message_key, and authorization by the bot owner, an enrolled team member, or an explicitly allowed administrator. The original group request is shared in Git; private Codex transcripts, bindings and credentials stay local."
+  "$comment": "Runtime also verifies the repo and target against the pinned team, a deterministic request ID derived from target_agent and message_key, and authorization by the bot owner, an enrolled team member, or an explicitly allowed administrator. The original group request is shared in Git; private Codex transcripts, bindings and credentials stay local. Optional review_context freezes pending tasks, sequences and code commits when the authenticated owner message arrives. Natural review interpretation cannot replace this context with a newer version. All peers must support these records before enabling natural reviews."
 }

@@ -61,7 +61,7 @@ export async function dispatchPeerWecom(frame, { service, config, reply }) {
       }
       const request = await service.receiveRequest({ chatId: body.chatid, messageId: body.msgid, senderId: sender, content, allowAdmin: admin });
       text = request.state.task_id ? `该消息已创建任务 ${request.state.task_id}，不会重复创建。`
-        : request.state.status === 'answered' ? '这条消息已处理。'
+        : ['answered', 'reviewed'].includes(request.state.status) ? '这条消息已处理。'
         : request.state.status === 'clarification' ? `需求 ${request.spec.id} 等待你补充说明，请查看群里的追问。`
         : `已收到你的需求（${request.spec.id}）；等待绑定的 Codex 对话轮询理解和处理。`;
     } else if (command.action === 'create') {
@@ -129,7 +129,9 @@ export function formatPeerNotification(task, type, agentId, team) {
     if (type === 'handoff') detail.push(next());
     else {
       detail.push(`${type === 'stage_review_requested' ? '本阶段等待真人审核，通过后继续下一阶段。' : '全部阶段已提交，等待真人审核。'}\n审核人：${task.state.assignee} 的所有者；审核身份：${task.state.assignee}；版本：R-${task.state.seq}`);
-      detail.push(`请审核人 @ ${task.state.assignee} 对应的机器人发送：\n协作 审核 ${task.spec.id} R-${task.state.seq} 通过\n协作 审核 ${task.spec.id} R-${task.state.seq} 退回 | 修改意见`);
+      detail.push(task.spec.execution_mode === 'desktop_poll'
+        ? `请审核人 @ ${task.state.assignee} 对应的机器人直接说“通过，继续下一步”，或“先别通过，安装步骤再补一下”（写清具体修改意见）。多条待审核任务时，我会先请你选择。`
+        : `请审核人 @ ${task.state.assignee} 对应的机器人发送：\n协作 审核 ${task.spec.id} R-${task.state.seq} 通过\n协作 审核 ${task.spec.id} R-${task.state.seq} 退回 | 修改意见`);
     }
   }
   if (type === 'reviewed') {
@@ -177,7 +179,7 @@ export function startPeerWecom({ service, config, clientFactory = (options) => n
   // process; never rely on receiving another bot's group messages for scheduling.
   const sendInbox = async (request, event) => {
     if (!config.chat_ids.includes(request.spec.chat_id)) return;
-    const label = event.type === 'clarified' ? '需要补充说明' : event.type === 'task_created' ? '任务与分工确认' : '回复';
+    const label = event.type === 'clarified' ? '需要补充说明' : event.type === 'task_created' ? '任务与分工确认' : event.type === 'reviewed' ? '审核结果' : '回复';
     const content = `[Codex Collab · ${service.agentId}] ${request.spec.id} ${label}\n${event.type === 'task_created' ? `任务：${event.task_id}\n` : ''}${notificationText(event.response)}${event.type === 'clarified' ? '\n请 @这个机器人直接补充；有多条追问时附上需求 N-ID。' : ''}`;
     assertReceipt(await client.sendMessage(request.spec.chat_id, { msgtype: 'markdown', markdown: { content } }));
   };
@@ -225,7 +227,7 @@ export class PeerNotificationRelay {
         if (request.spec.target_agent !== this.service.agentId) continue;
         const cursor = `inbox:${request.spec.id}`;
         for (const event of request.events.slice(this.cursors[cursor] || 0)) {
-          if (['clarified', 'answered', 'task_created'].includes(event.type)) await this.sendInbox(request, event);
+          if (['clarified', 'answered', 'task_created', 'reviewed'].includes(event.type)) await this.sendInbox(request, event);
           this.cursors[cursor] = event.seq;
           const temp = `${this.path}.${process.pid}.tmp`;
           await writeFile(temp, JSON.stringify(this.cursors) + '\n', { mode: 0o600 });

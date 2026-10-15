@@ -132,6 +132,16 @@ export class PeerGitStore {
       const task = await this.readLocal(state.task_id); const resolution = events.at(-1);
       if (digest(task.spec) !== resolution.task_hash || task.events[0].actor_id !== spec.target_agent || task.spec.execution_mode !== 'desktop_poll' || task.spec.source?.chat_id !== spec.chat_id || task.events[0].idempotency_key !== `inbox-task:${id}`) throw new Error('inbox resolution does not match its signed task');
     }
+    if (state.review_task_id) {
+      const resolution = events.at(-1); const task = await this.readLocal(state.review_task_id);
+      const reviewed = task.events[resolution.review_seq - 1];
+      const before = reducePeerTask(task.spec, task.events.slice(0, resolution.review_seq - 1), task.team || this.team);
+      const frozen = spec.review_context.find((item) => item.task_id === resolution.task_id);
+      if (!reviewed || reviewed.type !== 'reviewed' || reviewed.actor_id !== spec.target_agent || reviewed.decision !== resolution.decision
+        || reviewed.summary !== resolution.summary || reviewed.idempotency_key !== `inbox-review:${id}:${resolution.seq - 1}`
+        || digest(reviewed) !== resolution.task_event_hash || task.spec.source?.channel !== 'wecom' || task.spec.source.chat_id !== spec.chat_id
+        || before.checkpoint?.commit !== frozen.commit || before.stage !== frozen.stage || task.spec.title !== frozen.title || (task.team || this.team).agents[spec.target_agent]?.wecom_userid !== spec.sender_id) throw new Error('inbox review does not match its signed task decision');
+    }
     return { spec, events, state, team };
   }
   async listInboxLocal() {
@@ -142,8 +152,8 @@ export class PeerGitStore {
     return Promise.all(entries.sort().map((id) => this.readInboxLocal(id)));
   }
   async listInbox() { return this.locked(async () => { await this.sync(); return this.listInboxLocal(); }); }
-  // One remote Git CAS publishes BOTH the interpreted task and its resolution.
-  // Retries cannot leave a task created with a still-pending request.
+  // One remote Git CAS publishes the task creation/review and its inbox resolution.
+  // Retries cannot leave a task mutation with a still-pending request.
   async transactInbox(idempotencyKey, build, { replay = () => {} } = {}) {
     if (this.enrollmentOnly) throw new Error('enrollment client cannot write inbox requests');
     if (typeof idempotencyKey !== 'string' || !idempotencyKey || idempotencyKey.length > 300) throw new Error('invalid inbox idempotency key');
@@ -162,12 +172,27 @@ export class PeerGitStore {
         if (!spec || spec.id !== built.id || spec.target_agent !== this.agentId) throw new Error('inbox transaction identity mismatch');
         const now = new Date(this.clock()).toISOString();
         const team = current?.team || this.team;
+        let reviewedTask; let taskEvent;
+        if (built.taskReview) {
+          const review = built.taskReview; reviewedTask = await this.readLocal(review.task_id);
+          if (reviewedTask.state.seq !== review.expected_seq) throw new Error('review version changed');
+          taskEvent = makeSigner(reviewedTask.team || this.team, this.agentId, this.privateKey)({ schema_version: 2, task_id: review.task_id,
+            seq: review.expected_seq + 1, event_id: randomUUID(), actor_id: this.agentId, occurred_at: now,
+            idempotency_key: `inbox-review:${spec.id}:${current.state.seq}`, type: 'reviewed', decision: review.decision,
+            ...(review.summary ? { summary: review.summary } : {}) });
+          reducePeerTask(reviewedTask.spec, [...reviewedTask.events, taskEvent], reviewedTask.team || this.team);
+        }
         const event = makeSigner(team, this.agentId, this.privateKey)({ schema_version: 1, request_id: spec.id,
           seq: (current?.state.seq || 0) + 1, event_id: randomUUID(), actor_id: this.agentId, occurred_at: now,
-          idempotency_key: idempotencyKey, ...built.event, ...(current ? {} : { spec_hash: digest(spec) }) });
+          idempotency_key: idempotencyKey, ...built.event, ...(taskEvent ? { task_event_hash: digest(taskEvent) } : {}), ...(current ? {} : { spec_hash: digest(spec) }) });
         reduceInbox(spec, [...(current?.events || []), event], team);
         if ((event.type === 'task_created') !== !!built.taskSpec) throw new Error('inbox task must be published with its resolution');
+        if ((event.type === 'reviewed') !== !!built.taskReview) throw new Error('inbox review must be published with its task decision');
         const paths = [this.inboxRoot(spec.id)];
+        if (reviewedTask) {
+          const taskRoot = this.root(reviewedTask.spec.id); paths.push(taskRoot);
+          await writeFile(join(taskRoot, 'events', `${String(taskEvent.seq).padStart(6, '0')}-${taskEvent.event_id}.json`), JSON.stringify(taskEvent, null, 2) + '\n', { flag: 'wx' });
+        }
         if (built.taskSpec) {
           const taskSpec = built.taskSpec;
           const taskEvent = this.sign({ schema_version: 2, task_id: taskSpec.id, seq: 1, event_id: randomUUID(), actor_id: this.agentId,

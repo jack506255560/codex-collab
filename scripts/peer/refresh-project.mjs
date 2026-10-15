@@ -6,7 +6,7 @@ import { readPeerConfig } from '../../apps/peer/runtime.mjs';
 import { git } from '../../packages/peer/store.mjs';
 import { bindingPrompt } from './setup-desktop-project.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const legacyHashes = new Set(['6e4d1ea6a644fb3078c541e40bcc9e8bf5069462994152f3ec2fc3aa5fedd5fa', 'f98ad425e2ea3c8ab6fb86febef7d9cb288029ef55bea6937dda6de8b467fece']);
+const legacyHashes = new Set(['46543ca4fe00836f0ae0d7d7c12ea2756c9ab0220f01d29c391d608c5e405c53', '6e4d1ea6a644fb3078c541e40bcc9e8bf5069462994152f3ec2fc3aa5fedd5fa', 'f98ad425e2ea3c8ab6fb86febef7d9cb288029ef55bea6937dda6de8b467fece']);
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const inside = (parent, child) => { const path = relative(parent, child); return !path || path !== '..' && !path.startsWith('../') && !isAbsolute(path); };
 async function plainPath(base, path) {

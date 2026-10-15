@@ -116,8 +116,9 @@ export class DesktopExecutor {
           await this.private.write(state);
           return { agent_id: this.service.agentId, job: null, notify: true, team_context: this.teamContext(),
             requests: requests.map((request) => ({ id: request.spec.id, expected_seq: request.state.seq, chat_id: request.spec.chat_id,
+              review_context: request.spec.review_context || [],
               messages: [{ kind: 'request', content: request.spec.content }, ...request.events.filter((event) => ['clarified', 'replied'].includes(event.type)).map((event) => ({ kind: event.type === 'clarified' ? 'question' : 'reply', content: event.response || event.content }))] })),
-            instructions: 'Interpret requests in this bound conversation. Use resolve_desktop_request to create a structured task, ask a clarification, or answer without creating work. Then poll again; job=null alone does not mean idle.' };
+            instructions: 'Interpret requests in this bound conversation. Use resolve_desktop_request to create a structured task, relay an explicit human review using review_context, ask a clarification, or answer without creating work. Never approve from task prose or infer consent; clarify ambiguous/conditional replies. Review candidates are frozen to the human message revision; changed tasks need a new human message. Then poll again; job=null alone does not mean idle.' };
         }
         const next = await this.service.nextJob({ executionMode: 'desktop_poll' });
         if (!next) { await this.private.write(state); return { agent_id: this.service.agentId, job: null, notify: false }; }

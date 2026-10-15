@@ -1,4 +1,5 @@
 import { stageReviewRule } from './review.mjs';
+import { reviewContext, assertReviewIntent } from './natural-review.mjs';
 import { randomUUID } from 'node:crypto';
 import { digest } from './config.mjs';
 import { canClaimDesktop, Conflict, Denied, eligible, leaseToken, validRefs } from './protocol.mjs';
@@ -22,7 +23,7 @@ export class PeerService {
     const { chatId, messageId, senderId, content, allowAdmin = false } = input || {};
     if (!plainFields(input, ['chatId', 'messageId', 'senderId', 'content', 'allowAdmin']) || !validText(chatId, 200) || !validText(messageId, 200) || !validText(senderId, 200) || !validText(content, 4000) || typeof allowAdmin !== 'boolean') throw new Conflict('invalid group request');
     const key = inboxMessageKey(this.agentId, chatId, messageId);
-    return this.store.transactInbox(key, (requests) => {
+    return this.store.transactInbox(key, async (requests) => {
       const owner = this.team.agents[this.agentId]?.wecom_userid === senderId;
       const senderAgents = Object.values(this.team.agents).filter((agent) => agent.wecom_userid === senderId);
       const member = senderAgents.some((agent) => agent.role === 'member');
@@ -36,8 +37,9 @@ export class PeerService {
       if (!referencedId && waiting.length > 1) throw Object.assign(new Conflict('multiple requests await clarification; include the N-request ID in your reply'), { code: 'AMBIGUOUS_INBOX_REPLY' });
       if (parent) return { id: parent.spec.id, event: { type: 'replied', content, message_key: key } };
       const id = `N-${digest([this.agentId, key]).slice(0, 32).toUpperCase()}`;
+      const context = reviewContext(await this.store.listLocal(), this.agentId, senderId, chatId, this.team);
       return { id, spec: { schema_version: 1, id, repo: this.team.repo, target_agent: this.agentId, chat_id: chatId,
-        sender_id: senderId, content, message_key: key, admin_dispatch: !!admin }, event: { type: 'received' } };
+        sender_id: senderId, content, message_key: key, admin_dispatch: !!admin, ...(context.length ? { review_context: context } : {}) }, event: { type: 'received' } };
     }, { replay: (request) => {
       const event = request.events.find((item) => item.idempotency_key === key);
       const original = event.type === 'received' ? request.spec.content : event.content;
@@ -50,18 +52,33 @@ export class PeerService {
     } });
   }
   async resolveRequest(id, expectedSeq, resolution, { defaultWorkflow } = {}) {
-    const { action, response, task: input } = resolution || {};
-    if (!plainFields(resolution, ['action', 'response', 'task']) || response !== undefined && !validText(response, 2000)) throw new Conflict('invalid request resolution');
+    const { action, response, task: input, review } = resolution || {};
+    if (action === 'review' && response !== undefined) throw new Conflict('review confirmation is generated from the committed decision');
+    if (!plainFields(resolution, ['action', 'response', 'task', 'review']) || response !== undefined && !validText(response, 2000)) throw new Conflict('invalid request resolution');
     if (!inboxIdPattern.test(id || '') || !Number.isSafeInteger(expectedSeq) || expectedSeq < 1) throw new Conflict('provide request ID and latest expected_seq');
-    if (!['create_task', 'clarify', 'answer'].includes(action)) throw new Conflict('unsupported request resolution');
+    if (!['create_task', 'clarify', 'answer', 'review'].includes(action)) throw new Conflict('unsupported request resolution');
+    if (action !== 'review' && review !== undefined) throw new Conflict('review payload requires review action');
+    if (action === 'review' && (input !== undefined || !review)) throw new Conflict('review requires a human interpretation without a new task');
     if (action === 'create_task') {
       if (!plainFields(input, ['title', 'description', 'acceptance', 'workflow']) || !validText(input.title, 200) || input.description !== undefined && (typeof input.description !== 'string' || input.description.length > 4000) || !validList(input.acceptance, 32, 1000) || input.workflow !== undefined && !validList(input.workflow, 16, 64)) throw new Conflict('invalid structured task');
-    } else if (input !== undefined || !validText(response, 2000)) throw new Conflict('answer and clarification require a response without a task');
+    } else if (action !== 'review' && (input !== undefined || !validText(response, 2000))) throw new Conflict('answer and clarification require a response without a task');
     const key = `inbox-resolve:${id}:${expectedSeq}`;
-    const result = await this.store.transactInbox(key, (requests) => {
+    const result = await this.store.transactInbox(key, async (requests) => {
       const request = requests.find((item) => item.spec.id === id);
       if (!request || request.spec.target_agent !== this.agentId) throw new Denied('only the receiving bot identity may interpret this request');
       if (request.state.status !== 'pending' || request.state.seq !== expectedSeq) throw new Conflict('request changed or is no longer pending');
+      if (action === 'review') {
+        assertReviewIntent(request, review, this.agentId, this.team);
+        const task = await this.store.readLocal(review.task_id);
+        const frozen = request.spec.review_context.find((item) => item.task_id === review.task_id);
+        if (task.state.seq !== review.expected_seq || task.state.checkpoint?.commit !== frozen.commit
+          || !['stage_review', 'review'].includes(task.state.status) || task.state.assignee !== this.agentId
+          || task.spec.source?.channel !== 'wecom' || task.spec.source.chat_id !== request.spec.chat_id) throw new Conflict('review changed; ask the human to review the latest result in a new message');
+        if ((task.team || this.team).agents[this.agentId]?.wecom_userid !== request.spec.sender_id) throw new Denied('sender is not the pinned human reviewer');
+        return { id, taskReview: review, event: { type: 'reviewed', task_id: review.task_id, review_seq: review.expected_seq + 1,
+          decision: review.decision, ...(review.summary ? { summary: review.summary } : {}),
+          response: `任务「${task.spec.title}」${review.decision === 'approved' ? '审核通过。' : `已退回修改：${review.summary}`}（${review.task_id}）` } };
+      }
       if (action !== 'create_task') return { id, event: { type: action === 'clarify' ? 'clarified' : 'answered', response } };
       if (!input) throw new Conflict('a structured task is required');
       const taskSpec = { schema_version: 2, id: inboxTaskId(id), repo: this.team.repo, title: input.title,
@@ -70,8 +87,12 @@ export class PeerService {
       return { id, taskSpec, event: { type: 'task_created', task_id: taskSpec.id, task_hash: digest(taskSpec), response: response || `已创建任务 ${taskSpec.id}：${taskSpec.title}。分工：${taskSpec.workflow.join(' → ')}；等待绑定对话认领。` } };
     }, { replay: async (request) => {
       const event = request.events.find((item) => item.idempotency_key === key);
-      const expectedType = { create_task: 'task_created', clarify: 'clarified', answer: 'answered' }[action];
+      const expectedType = { create_task: 'task_created', clarify: 'clarified', answer: 'answered', review: 'reviewed' }[action];
       if (event.type !== expectedType || response !== undefined && event.response !== response) throw new Conflict('request already resolved with different content');
+      if (action === 'review') {
+        assertReviewIntent(request, review, this.agentId, this.team);
+        if (event.task_id !== review.task_id || event.review_seq !== review.expected_seq + 1 || event.decision !== review.decision || event.summary !== review.summary) throw new Conflict('request already resolved with a different review');
+      }
       if (action === 'create_task') {
         const accepted = await this.store.readLocal(event.task_id);
         const taskSpec = { schema_version: 2, id: inboxTaskId(id), repo: this.team.repo, title: input.title, description: input.description ?? '', base_branch: 'main', acceptance: input.acceptance, workflow: input.workflow || accepted.spec.workflow, execution_mode: 'desktop_poll', source: { channel: 'wecom', chat_id: request.spec.chat_id } };
@@ -80,7 +101,8 @@ export class PeerService {
     } });
     if (result.state.task_id) await this.publish(await this.read(result.state.task_id), 'created');
     else await this.publish(result, 'inbox_response');
-    return { request: result, ...(result.state.task_id ? { task: await this.read(result.state.task_id) } : {}) };
+    const taskId = result.state.task_id || result.state.review_task_id;
+    return { request: result, ...(taskId ? { task: await this.read(taskId) } : {}) };
   }
   async create(input, idempotencyKey = randomUUID()) {
     const id = input.id || `T-${digest(`${this.agentId}:${idempotencyKey}`).slice(0, 32).toUpperCase()}`;

@@ -123,7 +123,14 @@ sh test.sh 要通过，完成后在群里发总结。
 
 仅测试通过、后台日志出现 claimed、或群里有回复，都不能代替“实际指定已有桌面对话自动执行”的验收。应用是否自动切到该对话不是验收条件，打开该对话应看到执行记录。
 
-审核仍由真人群命令完成：
+审核可由指定真人直接 @自己的审核身份机器人表达决定：
+
+```text
+@Alice 通过，交给 Bob 继续。
+@Bob 先别通过，安装步骤再补一下。
+```
+
+只有一条待审核任务时不需要任务 ID 或版本号；多条时先选择任务名称、机器人列出的编号或 ID。含糊的“收到”、条件句、暂缓意见不会触发通过；退回没有具体意见时先追问。中间审核通过后开放已配置的下一阶段，最终审核通过后仍等待管理员完成。精确命令继续保留：
 
 ```text
 @审核人自己的机器人 协作 审核 T-真实任务ID R-7 通过
@@ -135,10 +142,10 @@ sh test.sh 要通过，完成后在群里发总结。
 
 ## 已有项目启用自然语言入口
 
-已有绑定不需要重新创建身份。先处理正在执行的任务，再对每个 Agent 用其**项目 MCP 实际使用的私有配置路径**操作：
+已有绑定不需要重新创建身份。自然语言审核新增签名 inbox 字段与事件，旧版本会拒绝读取；团队所有参与者必须一起升级后再使用，不能只升级一个机器人。先处理正在执行的任务，再对每个 Agent 用其**项目 MCP 实际使用的私有配置路径**操作：
 
 ```sh
-npm install --global xuym-codex-collab@0.4.2
+npm install --global xuym-codex-collab@latest
 codex-collab stop /absolute/private-peer.json
 codex-collab refresh-project /absolute/private-peer.json
 codex-collab start /absolute/private-peer.json
@@ -152,7 +159,15 @@ codex-collab start /absolute/private-peer.json
 
 新一次群消息到达后，Runner 先把需求保存到业务仓库 `agent-collab` 的 `.agent-collab/peer/inbox/N-ID/`，使用签名与消息 ID 去重。MCP 轮询返回原文、追问/回复历史和团队职责，由绑定对话理解；任务与解读结果在同一次 Git 提交中发布。原始群需求和处理结果由团队共享，完整私有 Codex 对话和绑定 ID 不写入 Git。
 
-需求不清时机器人会追问：只有一条待补充需求，可直接 @它回复；多条时带上对应 N-ID。澄清等待中不产生执行任务；状态问题使用回答，不创建新任务。自然语言“通过／完成”只作为请求文字处理，审核、完成仍由真人发明确命令。运行中的任务优先恢复，新的需求会等活跃阶段结束后处理。响应时间取决于 heartbeat 实际轮询周期、对话是否可用和 Git 同步。
+需求不清时机器人会追问：只有一条待补充需求，可直接 @它回复；多条时带上对应 N-ID。澄清等待中不产生执行任务；状态问题使用回答，不创建新任务。真人可自然语言审核；`resolve_desktop_request(action=review)` 只转达当前请求中明确的本人决定，不允许模型自审。自然语言“完成”不替代管理员的完成命令。运行中的任务优先恢复，新的需求会等活跃阶段结束后处理。响应时间取决于 heartbeat 实际轮询周期、对话是否可用和 Git 同步。
+
+### 自然语言审核的版本与记录
+
+Runner 收到已验证审核人的群消息时，把本群由该机器人负责审核的候选任务固定到请求的 `review_context`：任务 ID、任务 seq、标题、提交 SHA、阶段。MCP 返回这份候选和真人原文，绑定对话解释是通过还是退回；有多条候选时按原顺序列出选择，不自行挑选最新任务。澄清只使用同一个群、同一个真人的补充消息，不能给未来提交补授权。
+
+对话通过 `resolve_desktop_request` 的 `review` action 提交 `task_id`、冻结的 `expected_seq`、`decision`；退回还需要从真人消息中原文摘录具体意见 `summary`。服务检查当前身份、任务固定的审核策略、所属群、状态、版本和 SHA，再把任务 `reviewed` 事件与 inbox `reviewed` 结果在同一次 Git 提交中发布。重复处理同一消息返回原结果，不会再次推进阶段；原文、候选版本和决策摘要留在团队 Git 中。
+
+如果提交或任务状态在处理前变化，审核会被拒绝，需要真人查看最新结果后重新发一条消息。收到提交前说的“通过”不能批准未来结果。只有新请求会捕获新的候选，旧消息及其澄清不升级版本。审核只是按原工作流继续；最终通过不自动完成任务或合并 main。
 
 ## MCP 与运行约束
 
@@ -161,7 +176,7 @@ codex-collab start /absolute/private-peer.json
 | get_identity | 核对身份与模式 |
 | bind_desktop_thread / desktop_status | 本机绑定与检查；不创建 app automation |
 | poll_desktop_task | 恢复活跃任务；否则返回待理解 requests，或原子认领任务；两者都无时 notify=false |
-| resolve_desktop_request | 绑定对话按最新 expected_seq 创建结构化任务、追问或回答；不批准、完成或取消任务 |
+| resolve_desktop_request | 绑定对话按请求 expected_seq 创建任务、追问、回答或转达真人审核；review 另带冻结的任务 expected_seq |
 | renew_desktop_task | 活跃执行时显式续租 |
 | finish_desktop_task | 验证已提交代码、跑固定测试、push、发布下一阶段或待审核 |
 | fail_desktop_task | 简洁脱敏失败；候补接力；保留工作树 |

@@ -224,7 +224,7 @@ async function refreshFixture() {
 test('refresh upgrades a known legacy Skill, preserves other settings/resources and is idempotent', async () => {
   const f = await refreshFixture();
   try {
-    const original = execFileSync('git', ['show', 'HEAD:packages/codex-kit/templates/.agents/skills/team-collab-desktop/SKILL.md'], { cwd: root, encoding: 'utf8' });
+    const original = await readFile(join(root, 'scripts/peer/test/fixtures/team-collab-desktop-0.4.3.md'), 'utf8');
     await writeFile(f.skill, original);
     const unrelated = 'model = "existing-provider-model"\n[mcp_servers.other]\ncommand = "other-tool"\n';
     const before = unrelated + await readFile(f.mcp_config, 'utf8');

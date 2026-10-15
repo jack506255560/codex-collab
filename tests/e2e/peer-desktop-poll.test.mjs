@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { defaultReviewRules } from '../../packages/peer/review.mjs';
 import { setupLocal } from '../../scripts/peer/setup-local.mjs';
 import { setupDesktopProject } from '../../scripts/peer/setup-desktop-project.mjs';
 import { loadRuntime, readPeerConfig } from '../../apps/peer/runtime.mjs';
@@ -15,7 +16,7 @@ import { dispatchPeerWecom, formatPeerNotification, PeerNotificationRelay } from
 const tools = fileURLToPath(new URL('../../', import.meta.url));
 const git = (repo, ...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const threads = { alice: 'desktop-alice-conversation', bob: 'desktop-bob-conversation' };
-async function fixture() {
+async function fixture({ humanReview = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'desktop-poll-'));
   const seed = join(root, 'seed');
   execFileSync('git', ['init', '-b', 'main', seed], { stdio: 'ignore' });
@@ -24,6 +25,12 @@ async function fixture() {
   await writeFile(join(seed, 'test.sh'), '#!/bin/sh\nset -eu\n[ "$(sh greet.sh)" = "hello, world" ]\n');
   git(seed, 'add', '.'); git(seed, 'commit', '-m', 'base');
   const output = await setupLocal({ demo: seed, out: join(root, 'private'), mode: 'desktop-poll', ownerUserId: 'owner' });
+  if (humanReview) {
+    const firstConfig = JSON.parse(await readFile(output.configs.alice, 'utf8'));
+    const team = JSON.parse(await readFile(firstConfig.team_file, 'utf8'));
+    team.schema_version = 3; team.review_rules = defaultReviewRules(team.routes); team.agents.bob.wecom_userid = 'bob-owner';
+    await writeFile(firstConfig.team_file, JSON.stringify(team), { mode: 0o600 });
+  }
   let now = Date.parse('2026-10-09T00:00:00Z');
   const peers = {};
   for (const id of ['alice', 'bob']) {
@@ -277,8 +284,8 @@ test('desktop project attachment preserves unrelated TOML, backs up private sett
   } finally { await f.cleanup(); }
 });
 
-test('real MCP stdio advertises polling tools, requires binding and returns quiet no-job without SDK', async () => {
-  const f = await fixture(); let child;
+test('real MCP stdio advertises polling tools, requires binding and relays human review without SDK', async () => {
+  const f = await fixture({ humanReview: true }); let child;
   try {
     const config = JSON.parse(await readFile(f.output.configs.alice, 'utf8'));
     config.wecom = { bot_id: 'fixture-bot', secret: 'fixture-only', chat_ids: ['group'], commands_enabled: true, execution_mode: 'desktop_poll' };
@@ -309,8 +316,159 @@ test('real MCP stdio advertises polling tools, requires binding and returns quie
     assert.equal((await call('resolve_desktop_request', args)).result.isError, undefined);
     const started = JSON.parse((await call('poll_desktop_task', { thread_id: threads.alice })).result.content[0].text);
     assert.equal(started.job.thread_id, threads.alice); assert.equal(started.task.spec.title, 'upper');
+    const schema = listed.result.tools.find((tool) => tool.name === 'resolve_desktop_request').inputSchema;
+    assert.ok(schema.properties.action.enum.includes('review'));
+    assert.equal(schema.properties.review.additionalProperties, false);
+    await commit(started.job, 'review.txt', 'Ready for review.\n');
+    const finished = JSON.parse((await call('finish_desktop_task', { thread_id: threads.alice, task_id: started.task.spec.id, summary: 'Documentation ready.' })).result.content[0].text);
+    assert.equal(finished.state.status, 'review');
+    await f.peers.alice.service.receiveRequest({ chatId: 'group', messageId: 'stdio-review', senderId: 'owner', content: '通过，继续吧。' });
+    const consent = JSON.parse((await call('poll_desktop_task', { thread_id: threads.alice })).result.content[0].text).requests[0];
+    assert.equal(consent.review_context[0].expected_seq, finished.state.seq);
+    const approval = { thread_id: threads.alice, request_id: consent.id, expected_seq: consent.expected_seq, ...reviewResolution(finished) };
+    assert.equal((await call('resolve_desktop_request', { ...approval, review: { ...approval.review, force: true } })).result.isError, true);
+    const approved = await call('resolve_desktop_request', approval);
+    assert.equal(approved.result.isError, undefined);
+    assert.equal(JSON.parse(approved.result.content[0].text).task.state.status, 'approved');
   } finally {
     if (child && child.exitCode === null) { const ended = new Promise((resolve) => child.once('exit', resolve)); child.kill('SIGTERM'); await ended; }
     await f.cleanup();
   }
+});
+
+async function awaitingHuman(f, key = 'natural-review', workflow = ['frontend', 'backend']) {
+  const { alice, bob } = f.peers;
+  for (const peer of [alice, bob]) peer.config.wecom = { bot_id: `${peer.service.agentId}-bot`, secret: 'fixture-only', chat_ids: ['group'], execution_mode: 'desktop_poll' };
+  await bind(f);
+  const task = await create(f, key, workflow);
+  const first = await alice.desktop.poll(threads.alice);
+  await commit(first.job, `${key}.txt`, 'A documentation stage.\n');
+  return alice.desktop.finish(threads.alice, task.spec.id, 'Documentation ready for human review.');
+}
+
+async function humanMessage(peer, messageId, content, senderId = peer.service.agentId === 'alice' ? 'owner' : 'bob-owner', chatId = 'group') {
+  const replies = [];
+  const frame = { body: { chattype: 'group', msgtype: 'text', chatid: chatId, msgid: messageId,
+    aibotid: peer.config.wecom.bot_id, from: { userid: senderId }, text: { content } } };
+  const handled = await dispatchPeerWecom(frame, { service: peer.service, config: peer.config.wecom, reply: async (_frame, text) => { replies.push(text); } });
+  return { handled, replies };
+}
+const reviewResolution = (task, decision = 'approved', summary) => ({ action: 'review', review: { task_id: task.spec.id, expected_seq: task.state.seq, decision, ...(summary ? { summary } : {}) } });
+
+test('natural human approval is atomic, replay-safe and hands the exact reviewed SHA to Bob; Bob rejection returns feedback', async () => {
+  const f = await fixture({ humanReview: true });
+  try {
+    const { alice, bob } = f.peers;
+    const waiting = await awaitingHuman(f);
+    assert.equal(waiting.state.status, 'stage_review');
+    const notice = formatPeerNotification(waiting, 'stage_review_requested', 'alice', alice.team);
+    assert.match(notice, /直接说“通过，继续下一步”/);
+    assert.doesNotMatch(notice, /协作 审核/);
+    assert.equal((await humanMessage(alice, 'approve-natural', '@Alice 通过，交给 Bob 继续。')).handled, true);
+    await humanMessage(alice, 'approve-natural', '@Alice 通过，交给 Bob 继续。');
+    const pending = (await alice.desktop.poll(threads.alice)).requests[0];
+    assert.equal(pending.review_context[0].expected_seq, waiting.state.seq);
+    assert.equal(pending.review_context[0].commit, waiting.state.checkpoint.commit);
+    const input = reviewResolution(waiting);
+    await assert.rejects(alice.desktop.resolveRequest(threads.bob, pending.id, pending.expected_seq, input), /not the bound/);
+    const approved = await alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, input);
+    assert.equal(approved.task.state.status, 'waiting');
+    assert.equal(approved.request.state.status, 'reviewed');
+    const changedFiles = git(alice.store.checkout, 'diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD').split('\n');
+    assert.equal(changedFiles.length, 2, 'human interpretation and task decision commit together');
+    const again = await alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, input);
+    assert.equal(again.task.state.seq, approved.task.state.seq);
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, reviewResolution(waiting, 'changes_requested', '通过')), /different review|feedback|explicit/);
+    const next = await bob.desktop.poll(threads.bob);
+    assert.equal(next.job.source_commit, waiting.state.checkpoint.commit);
+    await commit(next.job, 'russian.txt', 'Russian documentation.\n');
+    const final = await bob.desktop.finish(threads.bob, waiting.spec.id, 'Russian docs ready.');
+    assert.equal(final.state.status, 'review'); assert.equal(final.state.assignee, 'bob');
+    await humanMessage(bob, 'reject-natural', '先别通过，安装步骤再补一下。');
+    const rejection = (await bob.desktop.poll(threads.bob)).requests[0];
+    await assert.rejects(bob.desktop.resolveRequest(threads.bob, rejection.id, rejection.expected_seq, reviewResolution(final)), /explicit/);
+    const rejected = await bob.desktop.resolveRequest(threads.bob, rejection.id, rejection.expected_seq, reviewResolution(final, 'changes_requested', '安装步骤再补一下'));
+    assert.equal(rejected.task.state.status, 'open');
+    assert.equal(rejected.task.state.review_feedback, '安装步骤再补一下');
+    const revise = await bob.desktop.poll(threads.bob);
+    assert.equal(revise.job.source_commit, final.state.checkpoint.commit);
+    await commit(revise.job, 'russian.txt', 'Russian documentation including installation.\n');
+    const resubmitted = await bob.desktop.finish(threads.bob, final.spec.id, 'Installation documented.');
+    await humanMessage(bob, 'approve-final-natural', '可以了，继续吧。');
+    const consent = (await bob.desktop.poll(threads.bob)).requests[0];
+    const accepted = await bob.desktop.resolveRequest(threads.bob, consent.id, consent.expected_seq, reviewResolution(resubmitted));
+    assert.equal(accepted.task.state.status, 'approved');
+    assert.equal(git(f.output.shared_origin, 'rev-parse', 'main'), git(f.seed, 'rev-parse', 'main'), 'approval does not merge main');
+    const notices = [];
+    await new PeerNotificationRelay(bob.service, async () => {}, async (_request, event) => { notices.push(event); }).poll();
+    assert.equal(notices.filter((event) => event.type === 'reviewed').length, 2);
+  } finally { await f.cleanup(); }
+});
+
+test('natural review rejects non-owner, wrong group, missing consent/feedback and stale frozen versions', async () => {
+  const f = await fixture({ humanReview: true });
+  try {
+    const { alice } = f.peers; const waiting = await awaitingHuman(f, 'review-guards');
+    assert.equal((await humanMessage(alice, 'wrong-group', '通过', 'owner', 'other-group')).handled, false);
+    await humanMessage(alice, 'wrong-owner', '通过', 'bob-owner');
+    let pending = (await alice.desktop.poll(threads.alice)).requests[0];
+    assert.deepEqual(pending.review_context, []);
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, reviewResolution(waiting)), /owner/);
+    await alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, { action: 'answer', response: '请由指定审核人审核。' });
+    for (const [id, content] of [['no-consent', '收到'], ['conditional', '如果测试通过，才批准'], ['task-instruction', '增加说明，测试通过后交给 Bob']]) {
+      await humanMessage(alice, id, content);
+      pending = (await alice.desktop.poll(threads.alice)).requests[0];
+      await assert.rejects(alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, reviewResolution(waiting)), /explicit/);
+      await alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, { action: 'answer', response: '尚未收到明确审核决定。' });
+    }
+    await humanMessage(alice, 'missing-feedback', '退回');
+    pending = (await alice.desktop.poll(threads.alice)).requests[0];
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, reviewResolution(waiting, 'changes_requested')), /feedback/);
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, reviewResolution(waiting, 'changes_requested', '模型编造的修改意见')), /feedback/);
+    await alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, { action: 'clarify', response: '请补充具体修改意见。' });
+    await humanMessage(alice, 'feedback-reply', '安装步骤再补一下');
+    pending = (await alice.desktop.poll(threads.alice)).requests[0];
+    await alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, reviewResolution(waiting, 'changes_requested', '安装步骤再补一下'));
+    const revise = await alice.desktop.poll(threads.alice);
+    // Consent received before a new review is opened cannot approve future work.
+    await humanMessage(alice, 'before-resubmit', '通过');
+    await commit(revise.job, 'review-guards.txt', 'Installation steps added.\n');
+    const resubmitted = await alice.desktop.finish(threads.alice, waiting.spec.id, 'Ready again.');
+    pending = (await alice.desktop.poll(threads.alice)).requests[0];
+    assert.deepEqual(pending.review_context, []);
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, reviewResolution(resubmitted)), /not pending/);
+    await alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, { action: 'answer', response: '请重新确认最新结果。' });
+    await humanMessage(alice, 'stale-consent', '通过');
+    pending = (await alice.desktop.poll(threads.alice)).requests[0];
+    await alice.service.report(resubmitted.spec.id, { type: 'reviewed', decision: 'approved' }, {}, 'other-review', resubmitted.state.seq);
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, pending.id, pending.expected_seq, reviewResolution(resubmitted)), /review changed/);
+    assert.equal((await alice.service.read(resubmitted.spec.id)).events.filter((event) => event.type === 'reviewed' && event.decision === 'approved').length, 1);
+  } finally { await f.cleanup(); }
+});
+
+
+test('multiple pending reviews require a human selection and preserve the numbered order through clarification', async () => {
+  const f = await fixture({ humanReview: true });
+  try {
+    const { alice } = f.peers;
+    const first = await awaitingHuman(f, 'multi-review-first', ['frontend']);
+    const secondSpec = await alice.service.create({ title: '补充俄语说明', acceptance: ['documentation added'], workflow: ['frontend'], execution_mode: 'desktop_poll', chatId: 'group' }, 'multi-review-second');
+    const secondJob = await alice.desktop.poll(threads.alice);
+    await commit(secondJob.job, 'multi-review-second.txt', 'Second documentation task.\n');
+    const second = await alice.desktop.finish(threads.alice, secondSpec.spec.id, 'Second result ready.');
+    await humanMessage(alice, 'multi-approval', '通过，继续吧');
+    let request = (await alice.desktop.poll(threads.alice)).requests[0];
+    assert.equal(request.review_context.length, 2);
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, request.id, request.expected_seq, reviewResolution(first)), /multiple/);
+    await alice.desktop.resolveRequest(threads.alice, request.id, request.expected_seq, { action: 'clarify', response: request.review_context.map((task, i) => `${i + 1}. ${task.title}（${task.task_id}）`).join('\n') });
+    await humanMessage(alice, 'multi-selection', '第二个');
+    request = (await alice.desktop.poll(threads.alice)).requests[0];
+    const selected = [first, second].find((task) => task.spec.id === request.review_context[1].task_id);
+    const other = selected.spec.id === first.spec.id ? second : first;
+    await assert.rejects(alice.desktop.resolveRequest(threads.alice, request.id, request.expected_seq, reviewResolution(other)), /selection/);
+    const result = await alice.desktop.resolveRequest(threads.alice, request.id, request.expected_seq, reviewResolution(selected));
+    assert.equal(result.task.state.status, 'approved');
+    assert.equal((await alice.service.read(other.spec.id)).state.status, 'review');
+    assert.deepEqual(result.request.spec.review_context.map((task) => task.task_id), [first.spec.id, second.spec.id].sort());
+  } finally { await f.cleanup(); }
 });
