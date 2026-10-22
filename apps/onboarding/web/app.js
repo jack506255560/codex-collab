@@ -18,7 +18,13 @@ const values = (form) => Object.fromEntries(new FormData(form));
 function text(tag, value) { const node = document.createElement(tag); node.textContent = value; return node; }
 function button(label, fn) { const node = text('button', label); node.onclick = () => action(fn); return node; }
 async function overview() {
-  const value = await api('overview'); $('profiles').replaceChildren(); $('removed-profiles').replaceChildren();
+  const value = await api('overview');
+  if (value.defaults) {
+    if (!$('admin-form').elements.repo.value) $('admin-form').elements.repo.value = value.defaults.repo || '';
+    if (!$('admin-form').elements.display_name.value) $('admin-form').elements.display_name.value = value.defaults.display_name || '';
+  }
+  $('startup-status').textContent = value.startup?.enabled ? '后台服务已运行，登录时自动恢复已开启的连接。可关闭终端和浏览器。' : value.startup?.error || '后台工作台会保持连接；登录自启状态可用 codex-collab autostart status 查看。';
+  $('profiles').replaceChildren(); $('removed-profiles').replaceChildren();
   $('removed-projects').hidden = !(value.removed_profiles || []).length;
   for (const profile of value.removed_profiles || []) {
     const card = document.createElement('div'); card.className = 'card'; const info = document.createElement('div');
@@ -29,7 +35,7 @@ async function overview() {
     const card = document.createElement('div'); card.className = 'card';
     card.append(text('span', `${draft.display_name || draft.agent_id} · 待完成群验证`), button('继续创建团队', () => openDraft(draft.id))); $('profiles').append(card);
   }
-  if (!value.profiles.length && !(value.drafts || []).length) $('profiles').append(text('p', '还没有接入项目。管理员选择“初始化团队”，成员选择“加入团队”。'));
+  if (!value.profiles.length && !(value.drafts || []).length) $('profiles').append(text('p', '还没有接入项目。选择“连接我的机器人”，或导入同事提供的接入包。'));
   for (const profile of value.profiles) {
     const card = document.createElement('div'); card.className = 'card'; const info = document.createElement('div');
     info.append(text('strong', `${profile.display_name || profile.agent_id} · ${profile.role === 'admin' ? '管理员' : '成员'}`), text('p', profile.repo));
@@ -119,7 +125,7 @@ function renderProfile(value, automatic = false) {
   $('reset-conversation').hidden = value.phase !== 'ready'; $('reset-robot').hidden = value.phase !== 'ready';
   $('profile-title').textContent = `${value.display_name && value.display_name !== value.agent_id ? `${value.display_name}（${value.agent_id}）` : value.agent_id} · ${value.role === 'admin' ? '管理员' : '成员'}`; $('profile-repo').textContent = value.repo;
   $('profile-diagnostics').hidden = !value.config_path; $('config-path').textContent = value.config_path || '';
-  $('checks').replaceChildren(); $('progress').replaceChildren(); $('binding').hidden = value.phase !== 'ready'; $('runner-actions').hidden = value.phase !== 'ready'; $('admin-tools').hidden = value.role !== 'admin' || value.phase !== 'ready';
+  $('checks').replaceChildren(); $('progress').replaceChildren(); $('binding').hidden = value.phase !== 'ready'; $('runner-actions').hidden = value.phase !== 'ready'; $('diagnostic-actions').hidden = value.phase !== 'ready'; $('admin-tools').hidden = value.role !== 'admin' || value.phase !== 'ready';
   if (value.phase === 'ready') {
     $('binding-text').textContent = value.binding_prompt; $('binding-details').textContent = value.detailed_binding_prompt || value.binding_prompt;
     for (const [label, ok, wait] of [['项目 MCP', value.project_setup?.mcp_configured, '待配置'], ['项目 Skill', value.project_setup?.skill_installed, '待配置'], ['企业微信机器人', value.runner?.wecom === 'authenticated', value.runner?.online ? '连接中' : '已停止'], ['目标 Codex 对话', !!value.desktop?.binding, '待绑定'], ['对话实际轮询', value.poll_recent, value.poll_observed ? '最近未观察到轮询' : '待观察'], ['可接收任务', value.can_receive_tasks, '尚未满足条件']]) {
@@ -191,30 +197,46 @@ $('review-form').onsubmit = (event) => { event.preventDefault(); action(async ()
   await api('review-rules', { id: currentId, expected_version: reviewVersion, review_rules });
   await loadProfile(currentId); notice('审核规则已保存，新任务将使用此规则。');
 }); };
-for (const button of document.querySelectorAll('[data-view]')) button.onclick = () => action(async () => { clearInterval(timer); if (resetPlan) { await api('reset-cancel', { id: resetPlan.id, preview_token: resetPlan.preview_token }); resetPlan = null; resetDiscovery = null; $('reset-secret').value = ''; } remember(null); show(button.dataset.view); if (button.dataset.view === 'home') await overview(); });
+for (const button of document.querySelectorAll('[data-view]')) button.onclick = () => action(async () => { clearInterval(timer); if (resetPlan) { await api('reset-cancel', { id: resetPlan.id, preview_token: resetPlan.preview_token }); resetPlan = null; resetDiscovery = null; $('reset-secret').value = ''; } remember(null); show(button.dataset.view); if (button.dataset.view === 'home') await overview(); if (button.dataset.view === 'admin' && $('admin-form').elements.repo.value) await checkProject(); });
 function repoMode(prefix) {
   const clone = $(`${prefix}-repo-mode`).value === 'clone'; $(`${prefix}-existing-repo`).hidden = clone; $(`${prefix}-clone-repo`).hidden = !clone;
 }
-for (const prefix of ['admin', 'join']) $(`${prefix}-repo-mode`).onchange = () => repoMode(prefix);
-$('check-project').onclick = () => action(async () => {
-  const selected = await api('project-check', values($('admin-form')));
+for (const prefix of ['admin', 'join', 'own']) $(`${prefix}-repo-mode`).onchange = () => repoMode(prefix);
+async function checkProject() {
+  const snapshot = values($('admin-form'));
+  const selected = await api('project-check', snapshot);
+  const current = values($('admin-form'));
+  if (['repo_mode', 'repo', 'remote', 'destination'].some((key) => current[key] !== snapshot[key])) return;
   const form = $('admin-form'); form.elements.repo.value = selected.repo; $('admin-repo-mode').value = 'existing'; repoMode('admin');
   $('project-recommendation').textContent = `项目已检查：${selected.repo}。${selected.tests.length ? '推荐：' + selected.tests.map((test) => test.command).join(' / ') + '，请确认或修改。' : '未找到常见测试入口，请填写适合项目的验证命令。'}`;
   if (!$('test-command').value && selected.tests.length) $('test-command').value = selected.tests[0].command;
-});
+}
+$('check-project').onclick = () => action(checkProject);
+for (const id of ['admin-repo', 'admin-remote', 'admin-destination']) $(id).onchange = () => {
+  const form = $('admin-form');
+  if ($('admin-repo-mode').value === 'clone' ? form.elements.remote.value && form.elements.destination.value : form.elements.repo.value) action(checkProject);
+};
 $('admin-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
   const input = values(event.target);
   const session = await api('admin-prepare', input); event.target.elements.secret.value = '';
   pending = { type: 'admin', draft_id: session.draft_id }; remember({ draft_id: session.draft_id }); await verifyView(session);
 }); };
 async function invitationInput(form) { const input = values(form); input.content = await input.file.text(); delete input.file; return input; }
-$('inspect-invite').onclick = () => action(async () => {
+async function inspectInvite() {
   $('invite-info').hidden = true; $('invite-summary').textContent = ''; $('invite-remote').textContent = '';
-  const value = await api('inspect-invite', await invitationInput($('join-form')));
+  const file = $('join-form').elements.file.files?.[0];
+  const input = await invitationInput($('join-form'));
+  const value = await api('inspect-invite', input);
+  if ($('join-form').elements.password.value !== input.password || $('join-form').elements.file.files?.[0] !== file) return;
   $('invite-info').hidden = false; $('invite-summary').textContent = `${value.display_name || value.agent_id}（${value.agent_id}）· 职责：${value.capabilities.join('、')}${value.team_name ? ' · ' + value.team_name : ''}`;
   $('invite-remote').textContent = value.remote;
   if (!$('join-form').elements.destination.value) $('join-form').elements.destination.value = value.suggested_repo;
-});
+}
+$('inspect-invite').onclick = () => action(inspectInvite);
+for (const id of ['invite-file', 'invite-password']) $(id).onchange = () => {
+  $('invite-info').hidden = true;
+  if ($('invite-file').files?.length && $('invite-password').value) action(inspectInvite);
+};
 $('join-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
   const profile = await api('import', await invitationInput(event.target)); event.target.elements.password.value = ''; await connectMember(profile);
 }); };
@@ -242,6 +264,14 @@ $('retry-code').onclick = () => action(async () => {
 $('confirm-code').onclick = () => action(completeVerification);
 $('existing-form').onsubmit = (event) => { event.preventDefault(); action(async () => { const profile = await api('existing', values(event.target)); await loadProfile(profile.id); }); };
 $('issue-form').onsubmit = (event) => { event.preventDefault(); action(async () => { const input = values(event.target); input.id = currentId; input.prefer = event.target.elements.prefer.checked; input.commands_enabled = event.target.elements.commands_enabled.checked; const result = await api('issue', input); event.target.reset(); await loadProfile(currentId); await showDelivery(currentId, result.invite_id); notice('接入包已生成。下载文件交给指定成员，密码请单独发送。'); }); };
+$('run-diagnostics').onclick = () => action(async () => {
+  const value = await api('diagnostics', { id: currentId }); $('diagnostic-result').replaceChildren();
+  for (const check of value.checks) $('diagnostic-result').append(text('p', `${check.ok ? '✓' : '待处理'} ${check.label}${check.action ? '：' + check.action : ''}`));
+  $('diagnostic-result').append(text('p', value.note));
+});
+$('repair-project').onclick = () => action(async () => {
+  const value = await api('repair', { id: currentId }); await loadProfile(currentId); notice(value.next_step);
+});
 $('refresh').onclick = () => action(() => loadProfile(currentId));
 $('start').onclick = () => action(async () => { await api('runner', { id: currentId, command: 'start' }); await loadProfile(currentId); });
 $('stop').onclick = () => action(async () => { await api('runner', { id: currentId, command: 'stop' }); await loadProfile(currentId); });

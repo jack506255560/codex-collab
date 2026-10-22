@@ -8,10 +8,10 @@
 
 ```sh
 npm install --global xuym-codex-collab
-codex-collab setup
+codex-collab
 ```
 
-`setup` 打开本机网页工作台，所有接入操作集中在一个页面。管理员选择“初始化团队”，成员选择“加入团队”；群身份验证、等待审批和本机配置会自动衔接，页面显示当前进度。已在使用旧配置的成员选择“导入已有配置”。终端保持运行即可继续使用工作台，关闭工作台后已启动的机器人连接仍运行。
+`setup` 打开本机网页工作台，所有接入操作集中在一个页面。管理员选择“连接我的机器人”，成员选择“接受同事邀请”；群身份验证、等待审批和本机配置会自动衔接，页面显示当前进度。已在使用旧配置的成员选择“导入已有配置”。命令启动后台工作台后退出，可以关闭终端和浏览器。macOS 默认设置登录自启；Linux 尝试配置 systemd 用户服务，失败时明确提示。工作台每 15 秒检查一次已开启的机器人进程，意外退出时恢复并在失败后退避重试；手动停止的连接保持停止。
 
 | 谁 | 在工作台做什么 | 接入后需要保留什么 |
 | --- | --- | --- |
@@ -35,6 +35,25 @@ Skill 完成身份核对、对话绑定和 heartbeat 配置，页面自动观察
 完整步骤与旧配置迁移见 [团队接入指南](docs/onboarding.md)。
 
 若管理员工作台显示接入包密码为空，通常是旧版本未保存原密码：无法从密文恢复，只能在管理员项目的“已分配的机器人”中重新生成包和密码。详情见[密码遗失恢复步骤](docs/onboarding.md#接入包密码遗失)。
+
+## 日常使用与升级
+
+在业务项目目录运行以下命令；只有一个接入时，也可以在任意目录运行。多个接入可通过 `codex-collab projects` 查看，再加 `--profile <项目ID>` 或唯一的 Agent ID 选择。原有显式 `peer.json` 路径参数继续支持。
+
+```sh
+codex-collab status
+codex-collab doctor
+codex-collab repair
+codex-collab stop
+codex-collab start
+codex-collab autostart status
+```
+
+`doctor` 检查项目 MCP/Skill、机器人进程与认证、对话绑定、真实轮询以及 Git 读取和推送权限，并给出下一步。页面也提供“检查整条连接”和“修复本机配置”。修复更新已识别的生成配置，并恢复缺失的 MCP 配置和 Skill；自定义、符号链接或已提交的共享配置需要手动合并。修复后请在 Codex 重新加载项目 MCP，在原对话执行启用指令。
+
+升级执行 `npm install -g xuym-codex-collab@latest`，然后重新打开工作台并修复项目配置。已经运行的 Node 进程需要重启才能加载新代码：停止并重新启动机器人；后台工作台可等下次登录，或终止 `codex-collab service-status` 显示的工作台 PID 后重新执行 `codex-collab`。0.5.0 迁移时只接管仍在运行的旧连接，已停止的旧连接需要你主动启动。
+
+`codex-collab autostart off` 关闭登录自启，`autostart on` 重新设置。`setup --no-startup` 仅跳过本次自启配置，`setup --foreground` 以前台模式运行，便于排查。Windows 支持独立后台工作台，暂未自动配置登录启动。电脑休眠、关机或退出系统期间不会执行群任务；Codex 对话的自动化仍需保持启用。
 
 ## 一次任务如何接力
 

@@ -6,8 +6,10 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadRuntime, readPeerConfig } from '../../apps/peer/runtime.mjs';
-import { alive, readRunnerLock } from '../../apps/peer/process.mjs';
+import { alive, readRunnerLock, acquireRunnerControl } from '../../apps/peer/process.mjs';
 import { git } from '../../packages/peer/store.mjs';
+
+import { readRunnerIntent, writeRunnerIntent } from '../../apps/peer/intent.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const [command, configArg, ...args] = process.argv.slice(2);
@@ -20,6 +22,8 @@ async function running() {
   return state && alive(state.pid) ? state : null;
 }
 
+const releaseControl = ['start', 'recover', 'stop'].includes(command) ? await acquireRunnerControl(config.data_dir, configPath) : null;
+try {
 switch (command) {
   case 'probe': {
     try {
@@ -58,7 +62,9 @@ switch (command) {
     console.log(JSON.stringify({ identity: config.agent_id, auto_execute: config.auto_execute !== false, execution_session: config.execution_mode === 'desktop_poll' ? 'bound desktop heartbeat; adapter never launches SDK (check desktop-status and app heartbeat separately)' : 'new Runner-owned SDK thread; not an existing desktop conversation', config: 'valid; private key matches policy', git: 'shared origin and main readable', origin_configured: !!origin, wecom: config.wecom ? 'configured; live authentication not checked' : 'disabled', codex_provider: config.execution_mode === 'desktop_poll' ? 'uses the existing desktop conversation model; no SDK provider is launched by this adapter' : 'not tested; uses selected CODEX_HOME/provider configuration', test_argv: config.test_argv || ['sh', 'test.sh'] }, null, 2));
     break;
   }
-  case 'start': {
+  case 'start': case 'recover': {
+    if (command === 'recover') { if (!(await readRunnerIntent(config.data_dir))?.enabled) break; }
+    else await writeRunnerIntent(config.data_dir, true);
     const current = await running();
     if (current) { console.log(`Runner already online (PID ${current.pid})`); break; }
     await mkdir(config.data_dir, { recursive: true, mode: 0o700 });
@@ -81,10 +87,11 @@ switch (command) {
         if (health.pid === state.pid && new Date(health.updated_at).getTime() >= new Date(state.started_at).getTime() && ['connecting', 'authenticated', 'reconnecting', 'disconnected', 'failed'].includes(health.status)) wecom = health.status;
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
-    console.log(JSON.stringify({ identity: config.agent_id, execution_mode: config.execution_mode || 'legacy', auto_execute: config.auto_execute !== false, online: !!state, wecom, pid: state?.pid || null, log: join(config.data_dir, 'runner.log') }, null, 2));
+    console.log(JSON.stringify({ identity: config.agent_id, execution_mode: config.execution_mode || 'legacy', auto_execute: config.auto_execute !== false, online: !!state, connection_enabled: (await readRunnerIntent(config.data_dir))?.enabled ?? !!state, wecom, pid: state?.pid || null, log: join(config.data_dir, 'runner.log') }, null, 2));
     break;
   }
   case 'stop': {
+    await writeRunnerIntent(config.data_dir, false);
     const state = await running();
     if (!state) { console.log('Runner offline'); break; }
     if (state.config !== configPath) throw new Error('PID configuration mismatch; refusing to signal');
@@ -114,3 +121,5 @@ switch (command) {
   }
   default: throw new Error('unknown peer command');
 }
+
+} finally { await releaseControl?.(); }

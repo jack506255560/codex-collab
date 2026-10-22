@@ -45,3 +45,16 @@ export async function acquireRunnerLock(dataDir, configPath) {
   }
   throw new Error('cannot acquire local Runner lock');
 }
+
+// Serialize CLI/supervisor start and stop across processes. The runner's own lock
+// still prevents duplicate bot connections; this control lock orders user intent.
+export async function acquireRunnerControl(dataDir, configPath) {
+  const deadline = Date.now() + 35000;
+  while (true) {
+    try { return await acquireRunnerLock(join(dataDir, 'runner-control'), configPath); }
+    catch (error) {
+      if (!error.message.startsWith('Runner already active') || Date.now() > deadline) throw error;
+      await delay(100);
+    }
+  }
+}

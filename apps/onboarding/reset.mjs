@@ -6,6 +6,7 @@ import { SetupError } from './errors.mjs';
 import { readPeerConfig, loadRuntime } from '../peer/runtime.mjs';
 import { PrivateDesktopState } from '../peer/private-state.mjs';
 import { alive, readRunnerLock } from '../peer/process.mjs';
+import { writeRunnerIntent } from '../peer/intent.mjs';
 import { installedProjectConfig } from '../../scripts/peer/refresh-project.mjs';
 import { bindingPrompt } from '../../scripts/peer/setup-desktop-project.mjs';
 import { digest, readPrivateJson } from '../../packages/peer/config.mjs';
@@ -152,8 +153,9 @@ export class ResetActions {
     if (!value || value.id !== input.id || value.kind !== input.kind || value.expires < Date.now() || value.fingerprint !== fingerprint) throw new SetupError('项目配置或绑定已改变，或预览已过期，请重新预览。');
   }
   async stop(context, plan) {
+    await writeRunnerIntent(context.dataDir, false);
     if (!plan.lock || !alive(plan.lock.pid)) return;
-    try { this.manager.runCli('stop', plan.lock.config); }
+    try { await this.manager.runCli('stop', plan.lock.config); }
     catch { throw new SetupError('机器人停止失败，未修改配置；请检查 Runner 后重试。'); }
     const lock = await readRunnerLock(join(context.dataDir, 'runner.pid.json'));
     if (lock && alive(lock.pid)) throw new SetupError('机器人仍在停止，请稍后重试；未修改配置。');

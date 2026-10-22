@@ -2,9 +2,12 @@ import { defaultReviewRules } from '../../packages/peer/review.mjs';
 import { SetupError } from './errors.mjs';
 import { createPublicKey, randomBytes, randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { readRunnerIntent, writeRunnerIntent } from '../peer/intent.mjs';
+import { localDefaults, workspaceHome } from './workspace.mjs';
+import { startupStatus } from './startup.mjs';
 import { fileURLToPath } from 'node:url';
 import { canonical, digest, generateIdentity, readPrivateJson, validateTeam } from '../../packages/peer/config.mjs';
 import { PeerGitStore, git } from '../../packages/peer/store.mjs';
@@ -111,12 +114,13 @@ function validateBundle(value) {
 }
 
 export class SetupManager {
-  constructor({ home = join(homedir(), '.config', 'codex-collab', 'workspace'), discovery = new BotDiscovery(), runCli } = {}) {
+  constructor({ home = workspaceHome(), discovery = new BotDiscovery(), runCli } = {}) {
     this.home = resolve(home); this.discovery = discovery; this.queue = Promise.resolve(); this.resets = new ResetActions(this);
-    this.runCli = runCli || ((command, config) => {
-      const result = spawnSync(process.execPath, [join(packageRoot, 'bin/codex-collab.mjs'), command, config], { encoding: 'utf8', timeout: 35000, maxBuffer: 200000 });
-      if (result.status !== 0) throw new Error(`本机 ${command} 操作未完成，请检查项目 Git 权限或 Runner 日志。`);
-      return result.stdout.trim();
+    this.runCli = runCli || (async (command, config) => {
+      try {
+        const result = await promisify(execFile)(process.execPath, [join(packageRoot, 'scripts/peer/cli.mjs'), command, config], { timeout: 35000, maxBuffer: 200000 });
+        return result.stdout.trim();
+      } catch { throw new Error(`本机 ${command} 操作未完成，请检查项目 Git 权限或 Runner 日志。`); }
     });
   }
   async exclusive(fn) { const action = this.queue.then(fn); this.queue = action.catch(() => {}); return action; }
@@ -143,7 +147,8 @@ export class SetupManager {
       const draft = await readPrivateJson(join(this.home, 'drafts', file));
       if (!draft.profile_id) drafts.push({ id: draft.id, agent_id: draft.input.agent_id, display_name: draft.input.display_name, repo: draft.input.repo });
     }
-    return { profiles, removed_profiles, drafts };
+    let context = {}; try { context = await readPrivateJson(join(this.home, 'context.json')); } catch {}
+    return { profiles, removed_profiles, drafts, defaults: await localDefaults(context.cwd || this.home), startup: await startupStatus(this.home) };
   }
   async checkBotAvailable(botId) {
     for (const profile of (await this.overview()).profiles) {
@@ -178,7 +183,7 @@ export class SetupManager {
   }
   async prepareProject(input) {
     const path = input.repo_mode === 'clone'
-      ? await cloneRepository({ remote: input.remote, destination: input.destination, privateHome: this.home }) : input.repo;
+      ? await cloneRepository({ remote: input.remote, destination: input.destination || suggestedRepo(input.remote, memberFields({ ...input, display_name: input.display_name || input.agent_id || 'owner' }).agent_id), privateHome: this.home }) : input.repo;
     const selected = await ensureRepo(path);
     if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
     return { ...selected, tests: await recommendTests(selected.repo) };
@@ -282,11 +287,12 @@ export class SetupManager {
     await savePrivate(join(this.path(id), 'peer.json'), { ...config, team_registry_root: rootHash });
     // Existing MCP processes keep using this path and the same private desktop state.
     await savePrivate(resolve(config_path), { ...config, team_registry_root: rootHash });
-    await this.save(state); this.runCli('start', resolve(config_path)); return this.detail(id, { localOnly: true });
+    await this.save(state); await this.runCli('start', resolve(config_path)); return this.detail(id, { localOnly: true });
   }
   async refreshAttachment(state, configPath) {
     try {
-      const installed = await installedProjectConfig({ repoPath: state.repo, agentId: state.agent_id });
+      const installed = await installedProjectConfig({ repoPath: state.repo, agentId: state.agent_id, allowMissing: true });
+      if (installed.missing) { await refreshProject({ configPath }); return; }
       const source = (await readPeerConfig(configPath)).config;
       const bound = (await readPeerConfig(installed.config_path)).config;
       if (bound.agent_id !== source.agent_id || bound.private_key !== source.private_key ||
@@ -296,6 +302,7 @@ export class SetupManager {
   }
   async resume(id) {
     const state = await this.state(id);
+    const wasReady = state.phase === 'ready';
     if (state.phase === 'removed') throw new SetupError('该项目已移除，请从首页恢复接入。');
     try {
       if (state.role === 'admin' && state.phase === 'initializing') {
@@ -367,7 +374,11 @@ export class SetupManager {
       if (state.phase === 'ready') {
         await this.refreshAttachment(state, state.existing_config || join(this.path(id), 'peer.json'));
         await savePrivate(join(this.path(id), 'binding.json'), { prompt: bindingPrompt(state.agent_id, state.repo) });
-        this.runCli('start', state.existing_config || join(this.path(id), 'peer.json'));
+        const configPath = state.existing_config || join(this.path(id), 'peer.json');
+        const { config } = await readPeerConfig(configPath);
+        const intent = await readRunnerIntent(config.data_dir);
+        if (intent?.enabled) await this.runCli('recover', configPath);
+        else if (!intent && !wasReady) { await writeRunnerIntent(config.data_dir, true); await this.runCli('start', configPath); }
       }
       state.last_error = null; await this.save(state);
       return this.detail(id, { localOnly: true });
@@ -618,7 +629,9 @@ export class SetupManager {
   async createOwnAgent(input) {
     const state = await this.state(input.id);
     if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('请从已接入的管理员项目添加自己的机器人。');
-    const selected = await ensureRepo(input.repo);
+    if (!idPattern.test(input.agent_id?.trim() || '')) throw new SetupError('请填写新 Agent 名称。');
+    const repo = input.repo_mode === 'clone' ? await cloneRepository({ remote: state.remote, destination: input.destination || suggestedRepo(state.remote, input.agent_id.trim()), privateHome: this.home }) : input.repo;
+    const selected = await ensureRepo(repo);
     if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
     if (remoteIdentity(selected.remote) !== remoteIdentity(state.remote)) throw new SetupError('新 Agent 必须选择同一业务仓库的另一个 clone。');
     const files = await readdir(join(this.path(input.id), 'exports')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
@@ -728,6 +741,7 @@ export class SetupManager {
       }
       const desktop = new DesktopExecutor({ agentId: config.agent_id, store: { clock: Date.now } }, config);
       result.desktop = await desktop.status();
+      result.connection_enabled = (await readRunnerIntent(config.data_dir))?.enabled ?? result.runner.online;
       result.last_poll_at = result.desktop.last_poll_at || null;
       result.poll_observed = !!result.last_poll_at;
       result.poll_recent = !!result.last_poll_at && Date.now() - Date.parse(result.last_poll_at) < 180000;
@@ -740,7 +754,10 @@ export class SetupManager {
     const state = await this.state(id); if (state.phase !== 'ready' || !['start', 'stop'].includes(command)) throw new SetupError('无效连接操作。');
     try {
       if (command === 'start' && [...this.discovery.sessions.values()].some((session) => session.bot_id === state.wecom?.bot_id && ['connecting', 'authenticated'].includes(session.status))) throw new SetupError('机器人正在验证，请先取消验证，再启动连接。');
-      this.runCli(command, state.existing_config || join(this.path(id), 'peer.json'));
+      const configPath = state.existing_config || join(this.path(id), 'peer.json');
+      const { config } = await readPeerConfig(configPath);
+      await writeRunnerIntent(config.data_dir, command === 'start');
+      await this.runCli(command, configPath);
       state.last_error = null; await this.save(state);
     } catch (error) {
       if (error instanceof SetupError) throw error;
@@ -748,6 +765,32 @@ export class SetupManager {
       await this.save(state); throw new SetupError(state.last_error);
     }
     return this.detail(id, { localOnly: true });
+  }
+  async diagnostics({ id }) {
+    const value = await this.detail(id, { localOnly: true });
+    const checks = [];
+    const add = (key, label, ok, action) => checks.push({ key, label, ok: !!ok, action: ok ? null : action });
+    add('setup', '本机接入', value.phase === 'ready', '先继续完成群身份验证和管理员确认。');
+    if (value.phase === 'ready') {
+      add('mcp', '项目 MCP', value.project_setup.mcp_configured, '点击修复本机配置，然后在 Codex 中重新加载项目 MCP。');
+      add('skill', '接入 Skill', value.project_setup.skill_installed, '点击修复本机配置，恢复工具生成的 Skill。');
+      add('runner', '后台机器人进程', value.runner.online, value.connection_enabled ? '连接已启用，后台将尝试恢复；也可以点击启动机器人连接。' : '连接已停止。需要接任务时点击启动机器人连接。');
+      add('wecom', '企业微信认证', value.runner.wecom === 'authenticated', '等待认证；若持续失败，请检查网络或通过更新机器人凭据重新验证。');
+      add('binding', '目标 Codex 对话', !!value.desktop.binding, '复制启用指令，发送到你选定的 Codex 对话。');
+      add('poll', '对话实际轮询', value.poll_recent, '在绑定对话中执行启用指令，并确认该对话的协作自动化已启用。');
+      try { await diagnosePeer(value.config_path, { testPush: true }); add('git', 'Git 读取与推送权限', true); }
+      catch { add('git', 'Git 读取与推送权限', false, '请完成本机 Git 登录，确认 origin/main 可读并具有推送权限。'); }
+    }
+    const startup = await startupStatus(this.home);
+    return { id, checks, ready: value.can_receive_tasks === true, startup, heartbeat_confirmed: false,
+      note: '检查使用真实进程、认证和轮询记录，不创建测试任务。未来能否自动唤醒仍需在 Codex 中确认自动化。' };
+  }
+  async repair({ id }) {
+    const state = await this.state(id);
+    if (state.phase !== 'ready') throw new SetupError('请先完成本机接入。');
+    const configPath = state.existing_config || join(this.path(id), 'peer.json');
+    await this.refreshAttachment(state, configPath);
+    return { id, repaired: true, next_step: '本机生成配置已更新。请在 Codex 重新加载项目 MCP，并在原绑定对话中执行启用指令。' };
   }
   resetPreview(input) { return this.resets.preview(input); }
   resetDiscovery(input) { return this.resets.discover(input); }

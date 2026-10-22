@@ -55,6 +55,7 @@ export async function recommendTests(repo) {
   return commands.map((argv) => ({ argv, command: displayCommand(argv) }));
 }
 export function suggestedRepo(remote, agentId) {
+  if (typeof remote !== 'string' || !remote.trim()) throw new SetupError('请填写业务仓库地址。');
   const name = remote.split(/[/:]/).at(-1).replace(/\.git$/, '').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80) || 'project';
   return join(homedir(), 'codex-projects', `${name}-${agentId}`);
 }

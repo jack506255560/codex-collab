@@ -22,7 +22,7 @@ test('wizard APIs require local Host, matching Origin and personal cookie, rejec
     const failure = await post('discovery', {}, headers); assert.equal(failure.status, 400); assert.doesNotMatch(await failure.text(), /SECRET|credentials/);
     assert.equal((await post('constructor', {}, headers)).status, 404);
     assert.equal((await post('discovery', { content: 'x'.repeat(760000) }, headers)).status, 413);
-    const page = await fetch(app.origin); assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/); assert.match(await page.text(), /管理员初始化/);
+    const page = await fetch(app.origin); assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/); assert.match(await page.text(), /连接我的机器人/);
   } finally { await app.close(); }
   assert.equal(closed, true);
 });
@@ -70,7 +70,7 @@ test('reset endpoints require browser session and exact Origin; private failures
 });
 
 test('guided routes require local session and Origin for project, draft, progress, batch and delivery operations', async () => {
-  const calls = [], names = { 'project-check': 'prepareProject', 'admin-prepare': 'prepareAdmin', 'admin-complete': 'completeAdmin', 'admin-retry': 'adminDraft', 'inspect-invite': 'inspectBundle', progress: 'progress', 'issue-batch': 'issueBatch', delivery: 'delivery' };
+  const calls = [], names = { 'project-check': 'prepareProject', 'admin-prepare': 'prepareAdmin', 'admin-complete': 'completeAdmin', 'admin-retry': 'adminDraft', 'inspect-invite': 'inspectBundle', progress: 'progress', 'issue-batch': 'issueBatch', delivery: 'delivery', diagnostics: 'diagnostics', repair: 'repair' };
   const manager = { close() {}, exclusive(fn) { return fn(); } };
   for (const method of Object.values(names)) manager[method] = async (input) => { calls.push([method, input]); return { ok: true }; };
   const app = await startSetupServer({ manager });

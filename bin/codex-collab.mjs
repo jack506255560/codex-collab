@@ -12,15 +12,20 @@ function usage() {
   console.log(`Codex Collab
 
 Usage:
-  codex-collab setup [--no-open]
+  codex-collab setup [--no-open] [--foreground] [--no-startup]
   codex-collab setup --terminal [--role admin|member]
   codex-collab
   codex-collab identity create <agent-id> [--dir /absolute/private/directory]
   codex-collab wecom discover
-  codex-collab refresh-project /absolute/private-peer.json
-  codex-collab <doctor|start|stop|status|list|read|review|complete|reopen|...> /abs/private-peer.json [args]
+  codex-collab <status|start|stop|doctor|repair> [--profile <project-id|agent-id>]
+  codex-collab projects
+  codex-collab autostart on|off|status
+  codex-collab service-status
+  codex-collab refresh-project [--profile <project-id|agent-id>]
+  codex-collab <list|read|review|complete|reopen|...> [--profile <id>] [args]
+  Advanced: commands also accept /absolute/private-peer.json before args.
 
-setup opens the local web wizard. --terminal keeps the legacy terminal workflow. Never pass a bot Secret as a command argument.`);
+setup opens the local workspace and runs its service in the background. It restores enabled connections at login on macOS and Linux with a user service. --terminal keeps the legacy terminal workflow. Never pass a bot Secret as a command argument.`);
 }
 
 async function discoverWeCom() {
@@ -70,9 +75,10 @@ async function main() {
   }
 
   if (args[0] === 'refresh-project') {
-    if (args.length !== 2) throw new Error('usage: codex-collab refresh-project /absolute/private-peer.json');
+    const { resolveCommand } = await import('../apps/onboarding/commands.mjs');
+    const { configPath } = await resolveCommand(args);
     const { refreshProject } = await import('../scripts/peer/refresh-project.mjs');
-    console.log(JSON.stringify(await refreshProject({ configPath: args[1] }), null, 2));
+    console.log(JSON.stringify(await refreshProject({ configPath }), null, 2));
     return;
   }
 
@@ -84,19 +90,25 @@ async function main() {
 
   if (args[0] === 'setup' || args.length === 0) {
     const options = args[0] === 'setup' ? args.slice(1) : [];
-    let role, terminal = false, open = true;
+    let role, terminal = false, open = true, foreground = false, startup = true;
     for (let i = 0; i < options.length; i++) {
       if (options[i] === '--role' && ['admin', 'member'].includes(options[i + 1])) { role = options[++i]; terminal = true; }
       else if (options[i] === '--terminal') terminal = true;
       else if (options[i] === '--no-open') open = false;
+      else if (options[i] === '--foreground') foreground = true;
+      else if (options[i] === '--no-startup') startup = false;
       else throw new Error('usage: codex-collab setup [--no-open] or setup --terminal [--role admin|member]');
     }
     if (terminal) { const { runSetupWizard } = await import('../scripts/peer/onboarding.mjs'); await runSetupWizard({ role }); }
-    else { const { runLocalSetup } = await import('../apps/onboarding/main.mjs'); await runLocalSetup({ open }); }
+    else { const { runLocalSetup } = await import('../apps/onboarding/main.mjs'); await runLocalSetup({ open, foreground, startup }); }
     return;
   }
 
-  process.argv = [process.execPath, join(packageRoot, 'scripts/peer/cli.mjs'), ...args];
+  const { workspaceCommand, resolveCommand, guidedCommand } = await import('../apps/onboarding/commands.mjs');
+  if (await workspaceCommand(args)) return;
+  const resolved = await resolveCommand(args);
+  if (await guidedCommand(resolved)) return;
+  process.argv = [process.execPath, join(packageRoot, 'scripts/peer/cli.mjs'), resolved.command, resolved.configPath, ...resolved.args];
   await import('../scripts/peer/cli.mjs');
 }
 
