@@ -1,21 +1,23 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:codex-collab:peer-task:v2",
-  "title": "Codex Collab Peer Task v2",
+  "$id": "urn:codex-collab:peer-task:v2-v3",
+  "title": "Codex Collab Peer Task v2 / v3",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "id", "repo", "title", "base_branch", "acceptance", "workflow"],
   "properties": {
-    "schema_version": { "const": 2 },
-    "id": { "type": "string", "pattern": "^T-[A-Z0-9-]{1,62}$" },
-    "repo": { "type": "string", "minLength": 1 },
-    "title": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
-    "description": { "type": "string", "maxLength": 4000 },
-    "base_branch": { "const": "main" },
-    "execution_mode": { "enum": ["desktop", "automatic", "desktop_poll"] },
-    "acceptance": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S" } },
-    "workflow": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" } },
-    "source": { "type": "object", "additionalProperties": false, "required": ["channel", "chat_id"], "properties": { "channel": { "const": "wecom" }, "chat_id": { "type": "string", "minLength": 1 } } }
+    "schema_version": {"enum": [2, 3]},
+    "id": {"type": "string", "pattern": "^T-[A-Z0-9-]{1,62}$"},
+    "repo": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S"},
+    "description": {"type": "string", "maxLength": 4000},
+    "base_branch": {"type": "string", "minLength": 1, "maxLength": 255},
+    "execution_mode": {"enum": ["desktop", "automatic", "desktop_poll"]},
+    "acceptance": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S"}},
+    "workflow": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"}},
+    "source": {"type": "object", "additionalProperties": false, "required": ["channel", "chat_id"], "properties": {"channel": {"const": "wecom"}, "chat_id": {"type": "string", "minLength": 1}}},
+    "base_commit": {"type": "string", "pattern": "^[a-f0-9]{40}(?:[a-f0-9]{24})?$"}
   },
-  "$comment": "Runtime additionally verifies repo identity and every workflow route against the pinned team policy. desktop_poll starts open and uses signed execution leases for existing-thread heartbeat workers; automatic SDK dispatch excludes that mode."
+  "$comment": "Runtime additionally validates Git branch syntax and the base branch against the signed team policy. v3 pins base_commit at task creation; v2 remains readable only under legacy policies. Task events remain v2. desktop_poll uses signed execution leases; automatic SDK dispatch excludes that mode.",
+  "allOf": [{"if": {"properties": {"schema_version": {"const": 2}}}, "then": {"properties": {"base_branch": {"const": "main"}}, "not": {"required": ["base_commit"]}}, "else": {"required": ["base_commit"]}}]
 }

@@ -63,10 +63,11 @@ export class DesktopExecutor {
   async prepare(job, task) {
     const refs = task.state.checkpoint;
     const fetched = `refs/collab-desktop/${this.service.agentId}/${task.spec.id}/${job.token.epoch}`;
-    await git(this.config.repo, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', `${refs ? `refs/heads/${refs.branch}` : 'refs/heads/main'}:${fetched}`);
+    await git(this.config.repo, 'fetch', '--no-tags', '--no-write-fetch-head', this.service.store.remoteName, `refs/heads/${refs?.branch || task.spec.base_branch}:${fetched}`);
     const tip = await git(this.config.repo, 'rev-parse', '--verify', `${fetched}^{commit}`);
     if (refs) await git(this.config.repo, 'merge-base', '--is-ancestor', refs.commit, tip);
-    const source = refs?.commit || tip;
+    const source = refs?.commit || task.spec.base_commit || tip;
+    if (!refs && task.spec.base_commit) await git(this.config.repo, 'merge-base', '--is-ancestor', source, tip);
     await this.service.assertLease(task.spec.id, job.token);
     const worktree = join(this.config.repo, '.codex-collab-worktrees', `${task.spec.id.toLowerCase()}-${this.service.agentId}-${job.token.epoch}`);
     const branch = `codex/desktop-${task.spec.id.toLowerCase()}-${this.service.agentId}-${job.token.epoch}`;
@@ -195,7 +196,7 @@ export class DesktopExecutor {
         }
         await this.service.assertLease(taskId, job.token);
         if (renewalFailed) throw new Conflict('execution lease lost; stop publishing');
-        await git(job.worktree, 'push', 'origin', `HEAD:refs/heads/${job.branch}`);
+        await git(job.worktree, 'push', this.service.store.remoteName, `HEAD:refs/heads/${job.branch}`);
         await this.service.assertLease(taskId, job.token);
         clearInterval(timer); await pulse;
         const more = task.state.stage + 1 < task.spec.workflow.length;

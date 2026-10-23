@@ -369,3 +369,40 @@ test('reissue failure clears secret and preserves the current delivery, and appr
     await p.click('reissue-cancel'); assert.equal(p.element('reissue-form').hidden, true);
   }
 });
+
+test('project check exposes ambiguous remote selection and preserves explicit baseline choice', async () => {
+  let checked;
+  const p = await page((path, input) => {
+    if (path === '/api/overview') return { profiles: [] };
+    if (path === '/api/project-check') { checked = input; return input.remote_name ? { repo: '/fixture/project', remote_name: 'team', remotes: ['team'], base_branch: input.base_branch || 'develop', branches: ['develop', 'release/stable'], tests: [] } : { repo: '/fixture/project', remotes: ['origin', 'team'], branches: [], selection_required: 'remote', tests: [] }; }
+    assert.fail(path);
+  });
+  const form = p.element('admin-form'); form.elements.repo = p.element('admin-repo'); form.elements.repo.value = '/fixture/project';
+  p.element('admin-repo-mode').value = 'existing';
+  Object.defineProperty(form, 'input', { get: () => ({ repo_mode: p.element('admin-repo-mode').value, repo: form.elements.repo.value, remote_name: p.element('admin-remote-name').value, base_branch: p.element('admin-base-branch').value }) });
+  await p.click('check-project');
+  assert.equal(p.element('repository-options').hidden, false); assert.match(p.element('project-recommendation').textContent, /选择协作远程/);
+  assert.deepEqual(p.element('admin-remote-name').children.map((node) => node.value), ['', 'origin', 'team']);
+  p.element('admin-remote-name').value = 'team'; p.element('admin-remote-name').onchange(); await p.settle();
+  assert.equal(checked.remote_name, 'team'); assert.equal(p.element('admin-base-branch').value, 'develop');
+  p.element('admin-base-branch').value = 'release/stable'; p.element('admin-base-branch').onchange(); await p.settle();
+  assert.equal(checked.base_branch, 'release/stable'); assert.match(p.element('project-recommendation').textContent, /team\/release\/stable/);
+  p.element('admin-repo-mode').value = 'clone'; p.element('admin-repo-mode').onchange();
+  assert.equal(p.element('admin-remote-name').value, ''); assert.equal(p.element('admin-base-branch').value, ''); assert.equal(p.element('repository-options').hidden, true);
+});
+
+test('admin repository settings save the loaded signed policy version and selected branch', async () => {
+  const admin = { ...ownAdmin(), base_branch: 'main', remote_name: 'upstream' }; let saved;
+  const p = await page((path, input) => {
+    if (path === '/api/overview') return { profiles: [admin] };
+    if (path === '/api/profile?id=admin') return admin;
+    if (path === '/api/repository-settings') return { version: 7, branches: ['main', 'develop'], base_branch: 'main', default_branch: 'main' };
+    if (path === '/api/repository-policy') { saved = input; admin.base_branch = input.base_branch; return admin; }
+    assert.fail(path);
+  });
+  await p.activate(p.element('profiles').children[0].children[1]);
+  await p.click('load-repository-settings'); assert.equal(p.element('repository-policy-form').hidden, false);
+  p.element('team-base-branch').value = 'develop'; await p.submit('repository-policy-form', {});
+  assert.equal(saved.id, 'admin'); assert.equal(saved.expected_version, 7); assert.equal(saved.base_branch, 'develop');
+  assert.match(p.element('profile-repo').textContent, /upstream\/develop/); assert.match(p.element('notice').textContent, /已有任务保留/);
+});

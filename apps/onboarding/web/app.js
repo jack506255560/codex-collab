@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
 let currentId, pending, discovery, timer, busy = false, reviewVersion = null, reviewId, ownAdminId, resetPlan, resetDiscovery;
+let repositoryPolicy;
 let viewEpoch = 0, currentView = 'home', completing = false, deliveryTarget;
 const storageKey = 'codex-collab-onboarding';
 function remember(value) { try { if (value) sessionStorage.setItem(storageKey, JSON.stringify(value)); else sessionStorage.removeItem(storageKey); } catch {} }
@@ -114,6 +115,7 @@ function watchProfile(id, epoch) {
   timer = setTimeout(tick, 5000);
 }
 async function loadProfile(id) {
+  repositoryPolicy = null; $('repository-policy-form').hidden = true;
   currentId = id; remember({ profile_id: id }); show('profile'); const epoch = viewEpoch; let value;
   try { value = await api(`profile?id=${id}`); } catch (error) { value = await api(`profile?id=${id}&local=1`); notice(`团队同步暂未成功，本机状态仍可查看。${error.message}`); }
   if (epoch !== viewEpoch) return;
@@ -123,7 +125,7 @@ async function loadProfile(id) {
 function renderProfile(value, automatic = false) {
   const id = value.id; renderSteps(value);
   $('reset-conversation').hidden = value.phase !== 'ready'; $('reset-robot').hidden = value.phase !== 'ready';
-  $('profile-title').textContent = `${value.display_name && value.display_name !== value.agent_id ? `${value.display_name}（${value.agent_id}）` : value.agent_id} · ${value.role === 'admin' ? '管理员' : '成员'}`; $('profile-repo').textContent = value.repo;
+  $('profile-title').textContent = `${value.display_name && value.display_name !== value.agent_id ? `${value.display_name}（${value.agent_id}）` : value.agent_id} · ${value.role === 'admin' ? '管理员' : '成员'}`; $('profile-repo').textContent = `${value.repo}${value.base_branch ? ` · 基准：${value.remote_name || '远程'}/${value.base_branch}` : ''}`;
   $('profile-diagnostics').hidden = !value.config_path; $('config-path').textContent = value.config_path || '';
   $('checks').replaceChildren(); $('progress').replaceChildren(); $('binding').hidden = value.phase !== 'ready'; $('runner-actions').hidden = value.phase !== 'ready'; $('diagnostic-actions').hidden = value.phase !== 'ready'; $('admin-tools').hidden = value.role !== 'admin' || value.phase !== 'ready';
   if (value.phase === 'ready') {
@@ -201,21 +203,54 @@ for (const button of document.querySelectorAll('[data-view]')) button.onclick = 
 function repoMode(prefix) {
   const clone = $(`${prefix}-repo-mode`).value === 'clone'; $(`${prefix}-existing-repo`).hidden = clone; $(`${prefix}-clone-repo`).hidden = !clone;
 }
-for (const prefix of ['admin', 'join', 'own']) $(`${prefix}-repo-mode`).onchange = () => repoMode(prefix);
+for (const prefix of ['admin', 'join', 'own']) $(`${prefix}-repo-mode`).onchange = () => {
+  repoMode(prefix);
+  if (prefix === 'admin') clearProjectSelection();
+};
+function clearProjectSelection() {
+  $('admin-remote-name').value = ''; $('admin-base-branch').value = ''; $('repository-options').hidden = true;
+  $('project-recommendation').textContent = '';
+}
 async function checkProject() {
   const snapshot = values($('admin-form'));
   const selected = await api('project-check', snapshot);
   const current = values($('admin-form'));
-  if (['repo_mode', 'repo', 'remote', 'destination'].some((key) => current[key] !== snapshot[key])) return;
+  if (['repo_mode', 'repo', 'remote', 'destination', 'remote_name', 'base_branch'].some((key) => current[key] !== snapshot[key])) return;
   const form = $('admin-form'); form.elements.repo.value = selected.repo; $('admin-repo-mode').value = 'existing'; repoMode('admin');
-  $('project-recommendation').textContent = `项目已检查：${selected.repo}。${selected.tests.length ? '推荐：' + selected.tests.map((test) => test.command).join(' / ') + '，请确认或修改。' : '未找到常见测试入口，请填写适合项目的验证命令。'}`;
+  $('repository-options').hidden = false;
+  for (const [id, options, chosen, placeholder] of [
+    ['admin-remote-name', selected.remotes || [], selected.remote_name, '请选择协作远程'],
+    ['admin-base-branch', selected.branches || [], selected.base_branch, '请选择业务基准分支'],
+  ]) {
+    const select = $(id); select.replaceChildren();
+    const empty = text('option', placeholder); empty.value = ''; select.append(empty);
+    for (const value of options) { const option = text('option', value); option.value = value; select.append(option); }
+    select.value = chosen || '';
+  }
+  $('project-recommendation').textContent = selected.selection_required ? '请在下方选择协作远程或业务基准分支，再继续。' : `项目已检查：${selected.repo}。基准：${selected.remote_name}/${selected.base_branch}。${selected.tests.length ? '推荐：' + selected.tests.map((test) => test.command).join(' / ') + '，请确认或修改。' : '未找到常见测试入口，请填写适合项目的验证命令。'}`;
   if (!$('test-command').value && selected.tests.length) $('test-command').value = selected.tests[0].command;
 }
+$('load-repository-settings').onclick = () => action(async () => {
+  const id = currentId, value = await api('repository-settings', { id });
+  if (id !== currentId || currentView !== 'profile') return;
+  const select = $('team-base-branch'); select.replaceChildren();
+  for (const branch of value.branches) { const option = text('option', branch); option.value = branch; select.append(option); }
+  select.value = value.branches.includes(value.base_branch) ? value.base_branch : value.default_branch || '';
+  repositoryPolicy = { id, expected_version: value.version }; $('repository-policy-form').hidden = false;
+});
+$('repository-policy-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
+  if (!repositoryPolicy || repositoryPolicy.id !== currentId) throw new Error('请重新读取团队基准分支。');
+  await api('repository-policy', { ...repositoryPolicy, base_branch: $('team-base-branch').value });
+  await loadProfile(currentId); notice('团队基准分支已保存，同事和新增机器人会自动继承；已有任务保留原起始提交。');
+}); };
 $('check-project').onclick = () => action(checkProject);
 for (const id of ['admin-repo', 'admin-remote', 'admin-destination']) $(id).onchange = () => {
   const form = $('admin-form');
+  clearProjectSelection();
   if ($('admin-repo-mode').value === 'clone' ? form.elements.remote.value && form.elements.destination.value : form.elements.repo.value) action(checkProject);
 };
+$('admin-remote-name').onchange = () => { $('admin-base-branch').value = ''; action(checkProject); };
+$('admin-base-branch').onchange = () => action(checkProject);
 $('admin-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
   const input = values(event.target);
   const session = await api('admin-prepare', input); event.target.elements.secret.value = '';
@@ -229,7 +264,7 @@ async function inspectInvite() {
   const value = await api('inspect-invite', input);
   if ($('join-form').elements.password.value !== input.password || $('join-form').elements.file.files?.[0] !== file) return;
   $('invite-info').hidden = false; $('invite-summary').textContent = `${value.display_name || value.agent_id}（${value.agent_id}）· 职责：${value.capabilities.join('、')}${value.team_name ? ' · ' + value.team_name : ''}`;
-  $('invite-remote').textContent = value.remote;
+  $('invite-remote').textContent = `${value.remote}${value.base_branch ? ` · 基准分支：${value.base_branch}（自动继承）` : ''}`;
   if (!$('join-form').elements.destination.value) $('join-form').elements.destination.value = value.suggested_repo;
 }
 $('inspect-invite').onclick = () => action(inspectInvite);

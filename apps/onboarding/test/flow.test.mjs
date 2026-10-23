@@ -19,7 +19,7 @@ function initLocalRepo(path, branch = 'main') {
   git(path, 'config', 'user.email', 'test@example.invalid');
 }
 
-test('onboarding explains empty, missing-main and missing-origin repositories', async () => {
+test('onboarding explains empty/no-remote repositories and detects develop without origin', async () => {
   const f = await fixture();
   try {
     const emptyRemote = join(f.root, 'empty-origin.git');
@@ -30,7 +30,7 @@ test('onboarding explains empty, missing-main and missing-origin repositories', 
     git(emptyRepo, 'add', '.'); git(emptyRepo, 'commit', '-m', 'fixture'); git(emptyRepo, 'remote', 'add', 'origin', emptyRemote);
     await assert.rejects(
       f.manager.createAdmin({ repo: emptyRepo, agent_id: 'empty', capabilities: 'backend' }),
-      (error) => error.message.includes('远程仓库为空') && error.message.includes('push -u origin main'),
+      (error) => error.message.includes('远程仓库为空') && error.message.includes('业务代码分支'),
     );
 
     const otherBranchRemote = join(f.root, 'other-branch-origin.git');
@@ -40,17 +40,17 @@ test('onboarding explains empty, missing-main and missing-origin repositories', 
     await writeFile(join(otherBranchRepo, 'test.sh'), 'set -eu\n');
     git(otherBranchRepo, 'add', '.'); git(otherBranchRepo, 'commit', '-m', 'fixture');
     git(otherBranchRepo, 'remote', 'add', 'origin', otherBranchRemote); git(otherBranchRepo, 'push', 'origin', 'HEAD:develop');
-    await assert.rejects(
-      f.manager.createAdmin({ repo: otherBranchRepo, agent_id: 'develop', capabilities: 'backend' }),
-      (error) => error.message.includes('没有 main 分支') && error.message.includes('push -u origin main'),
-    );
+    git(otherBranchRepo, 'remote', 'rename', 'origin', 'upstream');
+    const selected = await f.manager.prepareProject({ repo: otherBranchRepo });
+    assert.equal(selected.remote_name, 'upstream'); assert.equal(selected.base_branch, 'develop');
+    assert.equal(selected.base_commit, git(otherBranchRepo, 'rev-parse', 'HEAD'));
 
     const noOriginRepo = join(f.root, 'no-origin-repo');
     execFileSync('git', ['clone', f.remote, noOriginRepo], { stdio: 'ignore' });
     git(noOriginRepo, 'remote', 'remove', 'origin');
     await assert.rejects(
       f.manager.createAdmin({ repo: noOriginRepo, agent_id: 'no-origin', capabilities: 'backend' }),
-      /没有名为 origin 的远程仓库/,
+      /尚未配置远程仓库/,
     );
   } finally { await f.cleanup(); }
 });
@@ -270,7 +270,7 @@ test('member import rejects another origin before creating a profile or changing
     const otherRemote = join(f.root, 'another-origin.git');
     execFileSync('git', ['clone', '--bare', f.remote, otherRemote], { stdio: 'ignore' });
     git(f.repos.bob, 'remote', 'set-url', 'origin', otherRemote);
-    await assert.rejects(f.manager.importBundle({ content: exported.content, password: 'long-fixture-password', repo: f.repos.bob }), /origin 与邀请仓库不一致/);
+    await assert.rejects(f.manager.importBundle({ content: exported.content, password: 'long-fixture-password', repo: f.repos.bob }), /远程与邀请仓库不一致/);
     assert.equal(git(f.repos.bob, 'remote', 'get-url', 'origin'), otherRemote);
     assert.deepEqual((await f.manager.overview()).profiles.map((profile) => profile.id), [admin.id]);
     assert.equal(git(f.repos.bob, 'status', '--porcelain'), '');

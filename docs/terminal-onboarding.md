@@ -35,7 +35,7 @@ codex-collab setup --role admin
 
 ## 成员加入团队
 
-每位成员先 clone 目标仓库，确认 `origin/main` 可读且本机 Git 凭据有协作分支 push 权限。然后运行：
+管理员创建团队策略时确认一次业务基准分支；网页向导支持自动识别，终端向导会询问分支名称。每位成员先 clone 目标仓库，确认团队策略的业务基准分支可读（旧策略默认 `main`）且本机 Git 凭据有协作分支 push 权限。然后运行：
 
 ```sh
 codex-collab setup --role member
@@ -43,7 +43,7 @@ codex-collab setup --role member
 
 输入管理员提供的 `team.json` 路径、本机私钥文件、目标仓库 clone 路径和固定验证命令 argv。验证命令必须是 JSON 字符串数组，例如 `["npm","test"]`；默认值是 `["sh","test.sh"]`。它不会经过 shell 拆词，群消息不能改变这条命令。
 
-向导会生成 `0600` 本机配置和私有数据目录，检查 Git root、`origin/main` 与 push dry-run，可选写入该 clone 的本地 Codex MCP 配置和 Skill，并把本地文件加入 `.git/info/exclude`。不会改写 `origin`、全局 Codex 配置、CC Switch、业务文件或提交任何内容。
+向导会生成 `0600` 本机配置和私有数据目录，检查 Git root、所选远程的团队基准分支与 push dry-run，可选写入该 clone 的本地 Codex MCP 配置和 Skill，并把本地文件加入 `.git/info/exclude`。不会改写 Git 远程配置、全局 Codex 配置、CC Switch、业务文件或提交任何内容。
 
 若该项目已有 `.codex/config.toml` 被 Git 跟踪，向导会拒绝自动接入；不要强行取消跟踪，应让管理员检查项目配置，再采用个人 Codex 配置中的 MCP 示例。
 
@@ -95,4 +95,4 @@ codex-collab stop /absolute/path/to/private-peer.json
 
 完整验收至少检查：群回复任务 ID；Alice 的指定已有对话出现任务并提交阶段结果；Git 账本记录准确 commit SHA；下一位候补对话从该 SHA 接力；群里收到阶段通知；最终任务等待真人审核。不要把机器人在线或“任务已创建”误判为 Codex 已经开始执行。
 
-跨机器任务依赖同一可读写 Git remote。任务不会共享完整聊天记录，不自动批准、不合并 `main`。管理员仍需人工审查最终提交并决定是否合并。
+跨机器任务依赖同一可读写 Git remote。任务不会共享完整聊天记录，不自动批准、不合并业务基准分支。管理员仍需人工审查最终提交并决定是否合并。

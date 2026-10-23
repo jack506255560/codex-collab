@@ -1,3 +1,4 @@
+import { isBranchName } from './repository.mjs';
 import { validateReviewRules } from './review.mjs';
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
@@ -11,6 +12,7 @@ export const digest = (value) => createHash('sha256').update(canonical(value)).d
 const idPattern = /^[a-zA-Z0-9_-]{1,64}$/;
 export function validateTeam(team) {
   if (![2, 3].includes(team?.schema_version) || typeof team.repo !== 'string' || !team.repo || !idPattern.test(team.default_route ?? '')) throw new Error('invalid peer team configuration');
+  if (team.base_branch !== undefined && (!isBranchName(team.base_branch) || team.base_branch === 'agent-collab')) throw new Error('invalid team base branch');
   if (!team.agents || !team.routes || !Object.keys(team.agents).length) throw new Error('team needs agents and routes');
   const keys = new Set();
   for (const [id, agent] of Object.entries(team.agents)) {

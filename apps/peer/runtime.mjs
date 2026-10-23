@@ -1,3 +1,4 @@
+import { resolveRemote } from '../../packages/peer/repository.mjs';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { makeSigner, readPrivateJson, validateTeam } from '../../packages/peer/config.mjs';
@@ -8,6 +9,8 @@ export async function readPeerConfig(path, { allowDisabled = false } = {}) {
   const config = await readPrivateJson(resolve(path));
   if (config.local_disabled === true && !allowDisabled) throw new Error('此项目已移除本机接入，请通过向导恢复后重试。');
   if (config.schema_version !== 2 || ![config.repo, config.data_dir, config.team_file].every((p) => typeof p === 'string' && isAbsolute(p)) || typeof config.agent_id !== 'string') throw new Error('peer config needs v2 and absolute repo/data_dir/team_file paths');
+  if (config.remote_name !== undefined && (typeof config.remote_name !== 'string' || !config.remote_name || config.remote_name.startsWith('-') || /[\s\x00-\x1f\x7f]/.test(config.remote_name))) throw new Error('invalid configured remote name');
+  if (config.remote_url !== undefined && (typeof config.remote_url !== 'string' || !config.remote_url || /[\x00-\x1f\x7f]/.test(config.remote_url))) throw new Error('invalid configured remote URL');
   const team = validateTeam(JSON.parse(await readFile(config.team_file, 'utf8')));
   if (config.codex_home !== undefined && (typeof config.codex_home !== 'string' || !isAbsolute(config.codex_home))) throw new Error('codex_home must be an absolute path');
   if (config.auto_execute !== undefined && typeof config.auto_execute !== 'boolean') throw new Error('auto_execute must be a boolean');
@@ -25,6 +28,8 @@ export async function readPeerConfig(path, { allowDisabled = false } = {}) {
 }
 export async function loadRuntime(path, options = {}) {
   const { config, team } = await readPeerConfig(path);
-  const store = await new PeerGitStore({ registryRoot: config.team_registry_root, repo: config.repo, dataDir: config.data_dir, team, agentId: config.agent_id, privateKey: config.private_key, ...options }).init();
+  const selected = await resolveRemote(config.repo, { remoteName: config.remote_name, expectedRemote: config.remote_url, legacyOrigin: !config.remote_name && !config.remote_url });
+  config.remote_name = selected.remote_name;
+  const store = await new PeerGitStore({ remoteName: selected.remote_name, remoteUrl: selected.remote, registryRoot: config.team_registry_root, repo: config.repo, dataDir: config.data_dir, team, agentId: config.agent_id, privateKey: config.private_key, ...options }).init();
   return { config, team, store, service: new PeerService(store) };
 }

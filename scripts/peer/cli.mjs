@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { diagnosePeer } from './onboarding.mjs';
 import { loadRuntime, readPeerConfig } from '../../apps/peer/runtime.mjs';
 import { alive, readRunnerLock, acquireRunnerControl } from '../../apps/peer/process.mjs';
 import { git } from '../../packages/peer/store.mjs';
@@ -55,11 +56,7 @@ switch (command) {
     break;
   }
   case 'doctor': {
-    const origin = await git(config.repo, 'remote', 'get-url', 'origin');
-    const main = await git(config.repo, 'ls-remote', '--heads', 'origin', 'refs/heads/main');
-    if (!main) throw new Error('shared origin needs a main branch');
-    execFileSync('git', ['-C', config.repo, 'check-ref-format', 'refs/heads/agent-collab'], { stdio: 'ignore' });
-    console.log(JSON.stringify({ identity: config.agent_id, auto_execute: config.auto_execute !== false, execution_session: config.execution_mode === 'desktop_poll' ? 'bound desktop heartbeat; adapter never launches SDK (check desktop-status and app heartbeat separately)' : 'new Runner-owned SDK thread; not an existing desktop conversation', config: 'valid; private key matches policy', git: 'shared origin and main readable', origin_configured: !!origin, wecom: config.wecom ? 'configured; live authentication not checked' : 'disabled', codex_provider: config.execution_mode === 'desktop_poll' ? 'uses the existing desktop conversation model; no SDK provider is launched by this adapter' : 'not tested; uses selected CODEX_HOME/provider configuration', test_argv: config.test_argv || ['sh', 'test.sh'] }, null, 2));
+    console.log(JSON.stringify(await diagnosePeer(configPath), null, 2));
     break;
   }
   case 'start': case 'recover': {

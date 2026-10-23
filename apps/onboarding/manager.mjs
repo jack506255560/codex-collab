@@ -1,3 +1,4 @@
+import { inspectRepository, RepositoryError, resolveRemote, teamBaseBranch } from '../../packages/peer/repository.mjs';
 import { defaultReviewRules } from '../../packages/peer/review.mjs';
 import { SetupError } from './errors.mjs';
 import { createPublicKey, randomBytes, randomUUID } from 'node:crypto';
@@ -53,9 +54,8 @@ function gitFailure(error) {
   if (/could not resolve host|failed to connect|network is unreachable|connection refused|network failure/.test(detail)) {
     return new SetupError('无法连接远程仓库，请检查网络或代理后重试。');
   }
-  return new SetupError('Git 无法读取远程仓库，请检查 origin 地址、Git 权限和网络后重试。');
+  return new SetupError('Git 无法读取远程仓库，请检查所选远程地址、Git 权限和网络后重试。');
 }
-function shellQuote(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
 function mcpSection(text, serverName) {
   let active = false; const lines = [];
   for (const line of String(text || '').split(/\r?\n/)) {
@@ -74,7 +74,7 @@ function projectMcpConfigured(projectConfig, configPath, config) {
   const section = mcpSection(projectConfig, `team-collab-${config.agent_id}`);
   return !/^\s*enabled\s*=\s*false\s*(?:#.*)?$/m.test(section) && paths.some((path) => section.includes(JSON.stringify(path)));
 }
-async function ensureRepo(path) {
+async function ensureRepo(path, options = {}) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw new SetupError('请选择业务仓库的本机绝对路径。');
   let repo;
   try { repo = await realpath(path); } catch { throw new SetupError('请选择存在的业务仓库目录。'); }
@@ -84,25 +84,10 @@ async function ensureRepo(path) {
     if (error instanceof SetupError) throw error;
     throw new SetupError('请选择 Git 仓库根目录。');
   }
-  let remote;
-  try { remote = await git(repo, 'remote', 'get-url', 'origin'); }
-  catch (error) {
-    const detail = `${error?.stderr || ''}\n${error?.message || ''}`.toLowerCase();
-    if (/no such remote|does not appear to be a git repository/.test(detail)) throw new SetupError('该目录没有名为 origin 的远程仓库，请先配置 GitHub origin。');
-    throw gitFailure(error);
-  }
-  let main;
-  try { main = await git(repo, 'ls-remote', '--heads', 'origin', 'refs/heads/main'); }
-  catch (error) { throw gitFailure(error); }
-  if (!main) {
-    let heads;
-    try { heads = await git(repo, 'ls-remote', '--heads', 'origin'); }
-    catch (error) { throw gitFailure(error); }
-    if (!heads) throw new SetupError(`远程仓库为空，未找到 origin/main。请先在终端执行：\ngit -C ${shellQuote(repo)} push -u origin main`);
-    throw new SetupError(`远程仓库可访问，但没有 main 分支。请先将本地 main 推送到 origin：\ngit -C ${shellQuote(repo)} push -u origin main`);
-  }
-  return { repo, remote };
+  try { return { repo, ...await (options.remoteOnly ? resolveRemote(repo, options) : inspectRepository(repo, options)) }; }
+  catch (error) { if (error instanceof RepositoryError) throw new SetupError(error.message); throw gitFailure(error); }
 }
+
 function validateBundle(value) {
   if (!value || value.schema_version !== 1 || value.kind !== 'codex-collab-invite' || typeof value.remote !== 'string' || !value.remote || !value.history || !value.invitation || !value.wecom || typeof value.wecom.secret !== 'string' || !value.wecom.secret) throw new SetupError('接入包格式无效。');
   const history = validateHistory(value.history, value.root_hash);
@@ -130,7 +115,7 @@ export class SetupManager {
   async profileStore(state, { enrollmentOnly = false } = {}) {
     const identity = await readPrivateJson(state.identity_path);
     const initial = state.bootstrap_team;
-    return new PeerGitStore({ repo: state.repo, dataDir: state.data_dir || join(this.path(state.id), 'data'), team: initial,
+    return new PeerGitStore({ remoteName: state.remote_name, remoteUrl: state.remote, repo: state.repo, dataDir: state.data_dir || join(this.path(state.id), 'data'), team: initial,
       agentId: state.agent_id, privateKey: identity.private_key, registryRoot: state.root_hash, enrollmentOnly }).init();
   }
   async overview() {
@@ -167,7 +152,7 @@ export class SetupManager {
     }
     await this.checkBotAvailable(credentials.bot_id);
     if (input.repo) {
-      const { repo } = await ensureRepo(input.repo);
+      const { repo } = await ensureRepo(input.repo, { remoteName: input.remote_name, expectedRemote: input.remote_url, remoteOnly: true });
       const toml = await readFile(join(repo, '.codex/config.toml'), 'utf8').catch(() => '');
       for (const match of toml.matchAll(/"((?:[^"\\]|\\.)*\.json)"/g)) {
         try {
@@ -184,7 +169,7 @@ export class SetupManager {
   async prepareProject(input) {
     const path = input.repo_mode === 'clone'
       ? await cloneRepository({ remote: input.remote, destination: input.destination || suggestedRepo(input.remote, memberFields({ ...input, display_name: input.display_name || input.agent_id || 'owner' }).agent_id), privateHome: this.home }) : input.repo;
-    const selected = await ensureRepo(path);
+    const selected = await ensureRepo(path, { remoteName: input.remote_name, baseBranch: input.base_branch, allowSelection: true });
     if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
     return { ...selected, tests: await recommendTests(selected.repo) };
   }
@@ -196,7 +181,8 @@ export class SetupManager {
     const argv = input.test_command ? commandArgv(input.test_command) : testArgv(input.test_argv);
     const selected = await this.prepareProject(input);
     for (const profile of (await this.overview()).profiles) if (profile.repo === selected.repo) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
-    const draft = { id: randomUUID(), input: { ...fields, repo: selected.repo, test_argv: argv, team_name: input.team_name?.trim() || null,
+    if (selected.selection_required) throw new SetupError('请先检查项目并选择协作远程和业务基准分支。');
+    const draft = { id: randomUUID(), input: { ...fields, repo: selected.repo, remote_name: selected.remote_name, remote_url: selected.remote, base_branch: selected.base_branch, test_argv: argv, team_name: input.team_name?.trim() || null,
       bot_id: input.bot_id, secret: input.secret } };
     await savePrivate(this.draftPath(draft.id), draft);
     return this.adminDraft({ id: draft.id });
@@ -207,7 +193,7 @@ export class SetupManager {
     let session;
     if (draft.discovery_id && !reconnect) { try { session = this.discovery.view(draft.discovery_id); if (['failed', 'expired', 'disconnected'].includes(session.status)) session = null; } catch {} }
     if (!session) {
-      session = await this.beginDiscovery({ bot_id: draft.input.bot_id, secret: draft.input.secret, repo: draft.input.repo });
+      session = await this.beginDiscovery({ bot_id: draft.input.bot_id, secret: draft.input.secret, repo: draft.input.repo, remote_name: draft.input.remote_name, remote_url: draft.input.remote_url });
       draft.discovery_id = session.id; await savePrivate(this.draftPath(id), draft);
     }
     return { ...session, draft_id: id, agent_id: draft.input.agent_id, repo: draft.input.repo };
@@ -228,18 +214,18 @@ export class SetupManager {
   async createAdmin(input, { onSaved } = {}) {
     const fields = memberFields(input), agentId = fields.agent_id;
     const caps = fields.capabilities; const argv = input.test_command ? commandArgv(input.test_command) : testArgv(input.test_argv || ['sh', 'test.sh']);
-    const { repo, remote } = await ensureRepo(input.repo);
+    const { repo, remote, remote_name, base_branch } = await ensureRepo(input.repo, { remoteName: input.remote_name, expectedRemote: input.remote_url, baseBranch: input.base_branch });
     if (inside(repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
     for (const profile of (await this.overview()).profiles) if (profile.repo === repo) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
     const proof = this.discovery.consume(input.discovery_id);
     const id = randomUUID(); const directory = this.path(id);
     const identity = await getOrCreateIdentityFiles(agentId, join(this.home, 'identities'));
-    const team = buildTeamPolicy({ repo: input.repo_id?.trim() || remote, reviewer: agentId, defaultRoute: caps[0],
+    const team = buildTeamPolicy({ baseBranch: base_branch, repo: input.repo_id?.trim() || remote, reviewer: agentId, defaultRoute: caps[0],
       agents: [{ id: agentId, role: 'admin', capabilities: caps, publicKey: await readFile(identity.public_key_file, 'utf8'), wecomUserid: proof.userid }],
       routes: Object.fromEntries(caps.map((cap) => [cap, [agentId]])) });
     team.schema_version = 3; team.review_rules = defaultReviewRules(team.routes);
     const record = policyVersion(team, null, agentId, (await readPrivateJson(identity.private_key_file)).private_key);
-    const state = { id, role: 'admin', agent_id: agentId, display_name: fields.display_name, team_name: input.team_name || null, repo, remote, identity_path: identity.private_key_file, bootstrap_team: team,
+    const state = { id, role: 'admin', agent_id: agentId, display_name: fields.display_name, team_name: input.team_name || null, repo, remote, remote_name, identity_path: identity.private_key_file, bootstrap_team: team,
       root_hash: recordHash(record), genesis: record, test_argv: argv,
       wecom: { bot_id: proof.bot_id, secret: proof.secret, chat_ids: [proof.chatid], commands_enabled: true, allow_admin_commands: true }, phase: 'initializing' };
     await this.save(state);
@@ -261,7 +247,7 @@ export class SetupManager {
     const id = randomUUID(); const identityPath = join(this.path(id), 'identity.json');
     await savePrivate(identityPath, identity);
     let genesis, rootHash = config.team_registry_root;
-    const store = await new PeerGitStore({ repo: config.repo, dataDir: config.data_dir, team, agentId: config.agent_id, privateKey: config.private_key, registryRoot: rootHash }).init();
+    const store = await new PeerGitStore({ remoteName: config.remote_name, remoteUrl: config.remote_url, repo: config.repo, dataDir: config.data_dir, team, agentId: config.agent_id, privateKey: config.private_key, registryRoot: rootHash }).init();
     if (!rootHash) {
       const firstPath = join(store.checkout, '.agent-collab/team/versions/000001.json');
       if (await exists(firstPath)) {
@@ -282,7 +268,7 @@ export class SetupManager {
       }
     }
     const state = { id, role: team.agents[config.agent_id].role, agent_id: config.agent_id, repo: config.repo,
-      remote: await git(config.repo, 'remote', 'get-url', 'origin'), identity_path: identityPath, bootstrap_team: team, root_hash: rootHash,
+      remote: store.remoteUrl, remote_name: store.remoteName, identity_path: identityPath, bootstrap_team: team, root_hash: rootHash,
       test_argv: config.test_argv || ['sh', 'test.sh'], wecom: config.wecom, phase: 'ready', existing_config: resolve(config_path), data_dir: config.data_dir, attached: true };
     await savePrivate(join(this.path(id), 'peer.json'), { ...config, team_registry_root: rootHash });
     // Existing MCP processes keep using this path and the same private desktop state.
@@ -306,7 +292,7 @@ export class SetupManager {
     if (state.phase === 'removed') throw new SetupError('该项目已移除，请从首页恢复接入。');
     try {
       if (state.role === 'admin' && state.phase === 'initializing') {
-        const bootstrap = new PeerGitStore({ repo: state.repo, dataDir: join(this.path(id), 'data'), team: state.bootstrap_team, agentId: state.agent_id,
+        const bootstrap = new PeerGitStore({ remoteName: state.remote_name, remoteUrl: state.remote, repo: state.repo, dataDir: join(this.path(id), 'data'), team: state.bootstrap_team, agentId: state.agent_id,
           privateKey: (await readPrivateJson(state.identity_path)).private_key });
         await bootstrap.init();
         await bootstrap.registryTransaction(async () => {
@@ -358,7 +344,7 @@ export class SetupManager {
         const teamPath = join(this.path(id), 'team.json'); await savePrivate(teamPath, store.team);
         const configPath = join(this.path(id), 'peer.json');
         if (!await exists(configPath)) await createMemberConfig({ teamPath, identityPath: state.identity_path, repoPath: state.repo,
-          dataDir: join(this.path(id), 'data'), configPath, testArgv: state.test_argv });
+          dataDir: join(this.path(id), 'data'), configPath, testArgv: state.test_argv, remoteName: state.remote_name, remoteUrl: state.remote });
         const config = await readPrivateJson(configPath);
         await savePrivate(configPath, { ...config, team_registry_root: state.root_hash, wecom: state.wecom });
         await diagnosePeer(configPath, { testPush: true });
@@ -397,7 +383,7 @@ export class SetupManager {
   async inspectBundle(input) {
     const bundle = this.readBundle(input), invite = bundle.invitation;
     return { agent_id: invite.agent_id, display_name: bundle.display_name || invite.agent_id, team_name: bundle.team_name || null,
-      remote: bundle.remote, capabilities: invite.capabilities, bot_id: invite.bot_id, suggested_repo: suggestedRepo(bundle.remote, invite.agent_id) };
+      remote: bundle.remote, base_branch: teamBaseBranch(validateHistory(bundle.history, bundle.root_hash).latest.team), capabilities: invite.capabilities, bot_id: invite.bot_id, suggested_repo: suggestedRepo(bundle.remote, invite.agent_id) };
   }
   async importBundle(input) {
     const bundle = this.readBundle(input);
@@ -412,9 +398,9 @@ export class SetupManager {
   }
   async importAssignment(value, repo, ownAdminId) {
     const { bundle, history } = validateBundle(value);
-    const selected = await ensureRepo(repo);
+    const selected = await ensureRepo(repo, { expectedRemote: bundle.remote, remoteOnly: true });
     if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
-    if (remoteIdentity(selected.remote) !== remoteIdentity(bundle.remote)) throw new SetupError('该目录的 origin 与邀请仓库不一致，请选择正确仓库；工具不会改写 origin。');
+    if (remoteIdentity(selected.remote) !== remoteIdentity(bundle.remote)) throw new SetupError('该目录的远程与邀请仓库不一致，请选择正确仓库；工具不会改写远程配置。');
     let recovered;
     for (const profile of (await this.overview()).profiles) {
       const current = await this.state(profile.id);
@@ -433,7 +419,7 @@ export class SetupManager {
       recovered = current;
     }
     const id = recovered?.id || randomUUID(); const identity = await getOrCreateIdentityFiles(bundle.invitation.agent_id, join(this.home, 'identities'));
-    const state = { id, role: 'member', agent_id: bundle.invitation.agent_id, display_name: bundle.display_name || bundle.invitation.agent_id, team_name: bundle.team_name || null, repo: selected.repo, remote: selected.remote, identity_path: identity.private_key_file,
+    const state = { id, role: 'member', agent_id: bundle.invitation.agent_id, display_name: bundle.display_name || bundle.invitation.agent_id, team_name: bundle.team_name || null, repo: selected.repo, remote: selected.remote, remote_name: selected.remote_name, identity_path: identity.private_key_file,
       bootstrap_team: history.latest.team, root_hash: bundle.root_hash, bundle, test_argv: bundle.test_argv, phase: 'imported',
       ...(ownAdminId ? { own_admin_id: ownAdminId } : {}) };
     await this.save(state); return this.detail(id, { localOnly: true });
@@ -631,7 +617,8 @@ export class SetupManager {
     if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('请从已接入的管理员项目添加自己的机器人。');
     if (!idPattern.test(input.agent_id?.trim() || '')) throw new SetupError('请填写新 Agent 名称。');
     const repo = input.repo_mode === 'clone' ? await cloneRepository({ remote: state.remote, destination: input.destination || suggestedRepo(state.remote, input.agent_id.trim()), privateHome: this.home }) : input.repo;
-    const selected = await ensureRepo(repo);
+    const team = (await this.profileStore(state)).team;
+    const selected = await ensureRepo(repo, { expectedRemote: state.remote, baseBranch: teamBaseBranch(team) });
     if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
     if (remoteIdentity(selected.remote) !== remoteIdentity(state.remote)) throw new SetupError('新 Agent 必须选择同一业务仓库的另一个 clone。');
     const files = await readdir(join(this.path(input.id), 'exports')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
@@ -674,6 +661,32 @@ export class SetupManager {
     await savePrivate(config.team_file, store.team);
     return this.detail(id);
   }
+  async repositorySettings({ id }) {
+    const state = await this.state(id);
+    if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('只有已接入的管理员可设置基准分支。');
+    const store = await this.profileStore(state);
+    const selected = await ensureRepo(state.repo, { remoteName: store.remoteName, expectedRemote: state.remote, allowSelection: true });
+    return { branches: selected.branches, base_branch: teamBaseBranch(store.team), default_branch: selected.base_branch, version: store.registry.latest.version };
+  }
+  async setRepositoryPolicy({ id, expected_version, base_branch }) {
+    const state = await this.state(id);
+    if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('只有已接入的管理员可设置基准分支。');
+    if (!Number.isSafeInteger(expected_version) || expected_version < 1 || typeof base_branch !== 'string' || !base_branch) throw new SetupError('请重新读取团队基准分支后再保存。');
+    const store = await this.profileStore(state); const identity = await readPrivateJson(state.identity_path);
+    await ensureRepo(state.repo, { remoteName: store.remoteName, expectedRemote: state.remote, baseBranch: base_branch });
+    await store.registryTransaction(async (history) => {
+      if (history.latest.team.agents[state.agent_id]?.role !== 'admin') throw new SetupError('需要管理员权限。');
+      if (history.latest.version !== expected_version) throw new SetupError('团队规则已更新，请重新读取基准分支后再保存。');
+      const team = { ...structuredClone(history.latest.team), base_branch };
+      validateTeam(team);
+      if (canonical(team) === canonical(history.latest.team)) return { value: history.latest.version };
+      const version = policyVersion(team, history.latest, state.agent_id, identity.private_key);
+      return { files: [[versionFile(version), version]], value: version.version };
+    });
+    const { config } = await readPeerConfig(state.existing_config || join(this.path(id), 'peer.json'));
+    await savePrivate(config.team_file, store.team);
+    return this.detail(id);
+  }
   async setReviewRules({ id, expected_version, review_rules }) {
     const state = await this.state(id);
     if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('只有已接入的管理员可设置审核规则。');
@@ -697,8 +710,12 @@ export class SetupManager {
     const state = await this.state(id); const result = { id, agent_id: state.agent_id, display_name: state.display_name || state.agent_id, team_name: state.team_name || null, role: state.role, repo: state.repo, phase: state.phase, own_agent: !!state.own_admin_id, error: state.last_error || null };
     if (state.phase === 'imported') result.assignment = { capabilities: state.bundle.invitation.capabilities, bot_id: state.bundle.invitation.bot_id,
       expires_at: state.bundle.invitation.expires_at };
-    if (state.role === 'admin' && state.phase === 'ready' && !localOnly) {
-      const store = await this.profileStore(state); const owners = new Map();
+    let synchronized;
+    if (state.phase === 'ready' && !localOnly) {
+      synchronized = await this.profileStore(state); result.base_branch = teamBaseBranch(synchronized.team); result.remote_name = synchronized.remoteName;
+    }
+    if (state.role === 'admin' && synchronized) {
+      const store = synchronized; const owners = new Map();
       result.members = Object.entries(store.team.agents).map(([id, agent]) => {
         if (agent.wecom_userid) {
           const group = owners.get(agent.wecom_userid) || []; group.push(id); owners.set(agent.wecom_userid, group);
@@ -706,7 +723,7 @@ export class SetupManager {
         return { id, capabilities: agent.capabilities, role: agent.role, verified_owner: !!agent.wecom_userid };
       });
       result.owners = [...owners].map(([userid, agent_ids]) => ({ agent_ids, is_you: userid === store.team.agents[state.agent_id]?.wecom_userid }));
-      result.routes = store.team.routes; result.review_rules = store.team.review_rules || null; result.policy_schema_version = store.team.schema_version; result.version = store.registry.latest.version; result.requests = [];
+      result.base_branch = teamBaseBranch(store.team); result.remote_name = store.remoteName; result.routes = store.team.routes; result.review_rules = store.team.review_rules || null; result.policy_schema_version = store.team.schema_version; result.version = store.registry.latest.version; result.requests = [];
       const files = await readdir(join(store.checkout, registryPath, 'requests')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
       for (const file of files) {
         try {
@@ -729,7 +746,8 @@ export class SetupManager {
     }
     if (state.phase === 'ready') {
       result.config_path = state.existing_config || join(this.path(id), 'peer.json'); result.binding_prompt = bindingPrompt(state.agent_id, state.repo); result.detailed_binding_prompt = detailedBindingPrompt(state.agent_id, state.repo);
-      const config = (await readPeerConfig(result.config_path)).config;
+      const { config, team: cachedTeam } = await readPeerConfig(result.config_path);
+      result.base_branch ??= teamBaseBranch(cachedTeam); result.remote_name ??= config.remote_name || state.remote_name;
       const skillName = config.execution_mode === 'desktop_poll' ? 'team-collab-desktop' : 'team-collab';
       const projectConfig = await readFile(join(state.repo, '.codex', 'config.toml'), 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error));
       const installedSkill = await readFile(join(state.repo, '.agents', 'skills', skillName, 'SKILL.md'), 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error));
@@ -779,7 +797,7 @@ export class SetupManager {
       add('binding', '目标 Codex 对话', !!value.desktop.binding, '复制启用指令，发送到你选定的 Codex 对话。');
       add('poll', '对话实际轮询', value.poll_recent, '在绑定对话中执行启用指令，并确认该对话的协作自动化已启用。');
       try { await diagnosePeer(value.config_path, { testPush: true }); add('git', 'Git 读取与推送权限', true); }
-      catch { add('git', 'Git 读取与推送权限', false, '请完成本机 Git 登录，确认 origin/main 可读并具有推送权限。'); }
+      catch { add('git', 'Git 读取与推送权限', false, '请完成本机 Git 登录，确认所选远程和团队基准分支可读，并具有协作分支推送权限。'); }
     }
     const startup = await startupStatus(this.home);
     return { id, checks, ready: value.can_receive_tasks === true, startup, heartbeat_confirmed: false,

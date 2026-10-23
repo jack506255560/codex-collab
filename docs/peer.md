@@ -10,7 +10,7 @@ Peer 模式不部署共享 HTTP 服务。每位同事在自己的电脑上运行
 目标代码仓库的远程 Git 是唯一共享状态：
 
 ```text
-main                         业务代码基线
+<团队基准分支>               业务代码基线（默认识别远程 HEAD）
 codex/<agent>-...             各阶段代码分支
 agent-collab                  .agent-collab/peer/tasks/... 签名任务账本
 ```
@@ -59,7 +59,7 @@ reviewer 管理员身份可以同时运行代码；`PeerRunner` 和 agent-facing
 
 ## 每位同事初始化本机配置
 
-目标仓库必须已经有 `origin/main`。每位同事在自己的 clone 上执行：
+目标远程须有团队策略指定的业务基准分支；不要求远程别名为 `origin`。新团队在策略中设置 `base_branch`，旧策略未设置时默认 `main`。成员自动继承团队基准；多个不同远程需要通过网页向导明确选择。每位同事在自己的 clone 上执行：
 
 ```sh
 pnpm peer:init-agent \
@@ -203,3 +203,5 @@ Peer v2 JSON Schemas 为 `schemas/peer-task.schema.json` 与 `schemas/peer-event
 ## 指定已有桌面对话自动轮询
 
 新模式 `desktop_poll` 使用与 automatic 相同的签名租约/候补，但执行者是绑定的已有 Codex 对话。企微适配器配置 `auto_execute=false`；app heartbeat 调用 `poll_desktop_task`，对话执行并显式续租，`finish_desktop_task` 固定验证、推送和交接。默认 SDK 接单入口排除此模式；不使用旧 `claim_desktop_task` 的无期限手动保留。绑定/heartbeat 是不同步骤，不支持由 MCP 直接注入/实时唤醒任意桌面对话。完整配置、权限边界和验收见 [desktop-poll.md](desktop-poll.md)。
+
+新任务采用 v3 规格，记录 `base_branch` 与创建时固定的 `base_commit`。任务事件继续使用 v2。队列和候补不刷新起始 SHA，后续阶段使用签名 checkpoint 的精确 SHA；基准分支被删除或强制改写后，无法验证原提交时执行会失败。团队所有客户端须升级到 0.6.0 并重启后再创建 v3 任务；历史 v2 任务仍按原策略读取。

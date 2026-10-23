@@ -175,7 +175,7 @@ test('own agent rejects another remote before saving an invitation or identity',
   try {
     const admin = await f.admin();
     git(f.repos.bob, 'remote', 'set-url', 'origin', join(f.root, 'seed'));
-    await assert.rejects(f.manager.createOwnAgent(ownInput(f, admin)), /同一业务仓库/);
+    await assert.rejects(f.manager.createOwnAgent(ownInput(f, admin)), /远程与邀请仓库不一致/);
     assert.equal((await f.manager.overview()).profiles.length, 1);
     assert.deepEqual((await f.manager.detail(admin.id)).exports, []);
     assert.deepEqual(await readdir(join(f.manager.home, 'identities')), ['alice.private.json', 'alice.public.pem']);

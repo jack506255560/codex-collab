@@ -1,9 +1,9 @@
+import { resolveRemote } from '../../packages/peer/repository.mjs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, rmdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { git } from '../../packages/peer/store.mjs';
-import { remoteIdentity } from './bundle.mjs';
 import { SetupError } from './errors.mjs';
 
 export const responsibilities = {
@@ -80,7 +80,7 @@ export async function cloneRepository({ remote, destination, privateHome }) {
     if (existing.isSymbolicLink()) throw new SetupError('拉取目录不能是符号链接，请选择独立目录。');
     try {
       const actual = await realpath(target);
-      if (await git(actual, 'rev-parse', '--show-toplevel') === actual && remoteIdentity(await git(actual, 'remote', 'get-url', 'origin')) === remoteIdentity(remote)) return actual;
+      if (await git(actual, 'rev-parse', '--show-toplevel') === actual && !!await resolveRemote(actual, { expectedRemote: remote })) return actual;
     } catch { /* Reject existing unrelated folders instead of overwriting them. */ }
     throw new SetupError('目标目录已存在，请选择新的目录，或切换到使用已有项目。');
   }

@@ -137,7 +137,7 @@ export function formatPeerNotification(task, type, agentId, team) {
   if (type === 'reviewed') {
     if (event.decision === 'changes_requested') detail.push(`审核退回，${task.spec.workflow[task.state.stage]} 阶段重新执行。\n修改意见：${notificationText(task.state.review_feedback)}\n从提交 ${task.state.checkpoint.commit} 继续修改。`);
     else if (task.state.status === 'waiting') detail.push('真人审核已通过。', next());
-    else detail.push(`最终审核已通过；请管理员 @ 自己的机器人发送：协作 完成 ${task.spec.id}。代码分支尚未合并 main。`);
+    else detail.push(`最终审核已通过；请管理员 @ 自己的机器人发送：协作 完成 ${task.spec.id}。代码分支尚未合并 ${task.spec.base_branch}。`);
   }
   if (type === 'run_failed') detail.push('本阶段未成功，按 Git 路由交给剩余候选或等待人工处理。');
   return [base, ...detail].join('\n');

@@ -1,5 +1,6 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { git } from './git.mjs';
+export { git } from './git.mjs';
+import { resolveRemote, teamBaseBranch } from './repository.mjs';
 import { mkdir, readFile, readdir, writeFile, rm, open } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -7,25 +8,14 @@ import { digest, makeSigner, validateTeam } from './config.mjs';
 import { reducePeerTask, taskIdPattern } from './protocol.mjs';
 import { inboxIdPattern, reduceInbox } from './inbox.mjs';
 import { readRegistry, recordHash, registryPath } from './registry.mjs';
-const exec = promisify(execFile);
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
-export async function git(cwd, ...args) {
-  try {
-    const { stdout } = await exec('git', ['-c', 'core.hooksPath=/dev/null', '-C', cwd, ...args], { env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
-    return stdout.trim();
-  } catch (error) {
-    // Keep stderr available to callers that can turn it into a safe, actionable message.
-    // Never expose the raw value directly to the browser: it may contain credentials.
-    error.git_args = args;
-    throw error;
-  }
-}
 
 /** Disposable ledger clone, cross-process local lock, remote fast-forward CAS and signed replay. */
 export class PeerGitStore {
-  constructor({ repo, dataDir, team, agentId, privateKey, clock = Date.now, maxRetries = 8, registryRoot, enrollmentOnly = false }) {
+  constructor({ repo, dataDir, team, agentId, privateKey, clock = Date.now, maxRetries = 8, registryRoot, enrollmentOnly = false, remoteName, remoteUrl }) {
     this.repo = resolve(repo); this.dataDir = resolve(dataDir); this.checkout = join(this.dataDir, 'peer-ledger');
     this.team = validateTeam(team); this.agentId = agentId; this.enrollmentOnly = enrollmentOnly; this.sign = enrollmentOnly ? null : makeSigner(team, agentId, privateKey);
+    this.remoteName = remoteName; this.remoteUrl = remoteUrl;
     this.privateKey = privateKey; this.registryRoot = registryRoot; this.registry = null;
     this.clock = clock; this.maxRetries = maxRetries; this.push = true;
   }
@@ -49,10 +39,13 @@ export class PeerGitStore {
   }
   async init() {
     return this.locked(async () => {
-      const remote = await git(this.repo, 'remote', 'get-url', 'origin');
+      const selected = await resolveRemote(this.repo, { remoteName: this.remoteName, expectedRemote: this.remoteUrl });
+      this.remoteName = selected.remote_name; this.remoteUrl = selected.remote;
+      const remote = selected.remote;
       try { await git(this.checkout, 'rev-parse', '--git-dir'); }
       catch { await git(this.dataDir, 'clone', '--no-checkout', '--', remote, this.checkout); }
       if (await git(this.checkout, 'remote', 'get-url', 'origin') !== remote) throw new Error('private ledger origin differs from target repository');
+      await git(this.checkout, 'config', 'remote.origin.pushurl', selected.push_url);
       await git(this.checkout, 'config', 'user.name', this.agentId);
       await git(this.checkout, 'config', 'user.email', `${this.agentId}@collab.invalid`);
       if (!(await git(this.checkout, 'ls-remote', '--heads', 'origin', 'refs/heads/agent-collab'))) {
@@ -66,6 +59,13 @@ export class PeerGitStore {
       }
       await this.sync(); return this;
     });
+  }
+  async snapshotBase() {
+    const branch = teamBaseBranch(this.team);
+    const ref = `refs/collab-bases/${digest(branch)}`;
+    await git(this.checkout, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', `+refs/heads/${branch}:${ref}`);
+    const commit = await git(this.checkout, 'rev-parse', '--verify', `${ref}^{commit}`);
+    return { schema_version: 3, base_branch: branch, base_commit: commit };
   }
   async sync() {
     await git(this.checkout, 'fetch', '--no-tags', 'origin', '+refs/heads/agent-collab:refs/remotes/origin/agent-collab');

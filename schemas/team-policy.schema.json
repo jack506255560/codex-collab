@@ -153,9 +153,20 @@
           }
         }
       }
+    },
+    "base_branch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "not": {
+        "enum": [
+          "agent-collab",
+          "HEAD"
+        ]
+      }
     }
   },
-  "$comment": "Runtime verifies distinct Ed25519 keys and valid owner IDs (several agents may share the same human owner), valid reviewer and route capabilities, and clock skew below half the lease. v3 requires a review rule for every route; specific members require a verified owner. v2 forbids review_rules so old clients cannot silently bypass gates.",
+  "$comment": "Runtime verifies distinct Ed25519 keys and valid owner IDs (several agents may share the same human owner), valid reviewer and route capabilities, and clock skew below half the lease. v3 requires a review rule for every route; specific members require a verified owner. v2 forbids review_rules so old clients cannot silently bypass gates. Optional base_branch is the signed baseline for future tasks; legacy policies default to main. Runtime additionally enforces Git branch syntax. Remote aliases stay in local configuration.",
   "allOf": [
     {
       "if": {

@@ -46,10 +46,11 @@ export class PeerRunner {
       await mkdir(join(this.config.data_dir, 'jobs', id), { recursive: true });
       const refs = task.state.checkpoint;
       const fetchedRef = `refs/collab-peer/${this.service.agentId}/${id}/${token.epoch}`;
-      await git(this.config.repo, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', `${refs ? `refs/heads/${refs.branch}` : 'refs/heads/main'}:${fetchedRef}`);
+      await git(this.config.repo, 'fetch', '--no-tags', '--no-write-fetch-head', this.service.store.remoteName, `refs/heads/${refs?.branch || task.spec.base_branch}:${fetchedRef}`);
       const tip = await git(this.config.repo, 'rev-parse', '--verify', `${fetchedRef}^{commit}`);
       if (refs) await git(this.config.repo, 'merge-base', '--is-ancestor', refs.commit, tip);
-      const source = refs?.commit || tip;
+      const source = refs?.commit || task.spec.base_commit || tip;
+      if (!refs && task.spec.base_commit) await git(this.config.repo, 'merge-base', '--is-ancestor', source, tip);
       await ensure();
       await git(this.config.repo, 'worktree', 'add', '-b', branch, worktree, source); created = true;
       const note = task.events.findLast((e) => ['handoff', 'stage_review_requested'].includes(e.type))?.summary || '';
@@ -75,7 +76,7 @@ export class PeerRunner {
       }
       if (await git(worktree, 'status', '--porcelain')) throw new Error('worktree not clean');
       const commit = await git(worktree, 'rev-parse', 'HEAD'); if (commit === source) throw new Error('agent produced no code changes');
-      await ensure(); await git(worktree, 'push', 'origin', `HEAD:refs/heads/${branch}`); await ensure();
+      await ensure(); await git(worktree, 'push', this.service.store.remoteName, `HEAD:refs/heads/${branch}`); await ensure();
       clearInterval(timer); await pulse; await ensure();
       const more = task.state.stage + 1 < task.spec.workflow.length;
       phase = 'protocol';

@@ -1,3 +1,4 @@
+import { inspectRepository, resolveRemote, teamBaseBranch } from '../../packages/peer/repository.mjs';
 import { createPublicKey } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
@@ -62,10 +63,11 @@ export async function getOrCreateIdentityFiles(agentId, directory) {
   return { agent_id: agentId, private_key_file: privatePath, public_key_file: publicPath };
 }
 
-export function buildTeamPolicy({ repo, reviewer, defaultRoute, agents, routes, policy = {} }) {
+export function buildTeamPolicy({ repo, reviewer, defaultRoute, agents, routes, policy = {}, baseBranch }) {
   const team = validateTeam({
     schema_version: 2,
     repo,
+    ...(baseBranch !== undefined ? { base_branch: baseBranch } : {}),
     reviewer,
     default_route: defaultRoute,
     agents: Object.fromEntries(agents.map((agent) => [agent.id, {
@@ -95,7 +97,7 @@ export async function writeTeamPolicy(path, team) {
   return path;
 }
 
-export async function createMemberConfig({ teamPath, identityPath, repoPath, dataDir, configPath, testArgv = ['sh', 'test.sh'] }) {
+export async function createMemberConfig({ teamPath, identityPath, repoPath, dataDir, configPath, testArgv = ['sh', 'test.sh'], remoteName, remoteUrl }) {
   for (const path of [teamPath, identityPath, repoPath, dataDir, configPath]) {
     if (!path || !isAbsolute(path)) throw new Error('team, identity, repository, data and config paths must be absolute');
   }
@@ -109,13 +111,13 @@ export async function createMemberConfig({ teamPath, identityPath, repoPath, dat
   if (await git(repo, 'rev-parse', '--show-toplevel') !== repo) throw new Error('select the root directory of a Git project');
   const privatePaths = [dataDir, configPath, identityPath];
   if (privatePaths.some((path) => isWithin(repoPath, path) || isWithin(repo, path))) throw new Error('private identity, data and config files must stay outside the code repository');
-  const origin = await git(repo, 'remote', 'get-url', 'origin');
-  const main = await git(repo, 'ls-remote', '--heads', 'origin', 'refs/heads/main');
-  if (!main) throw new Error('the shared origin must have a readable main branch');
+  const selected = await inspectRepository(repo, { remoteName, expectedRemote: remoteUrl, baseBranch: teamBaseBranch(team) });
   const config = {
     schema_version: 2,
     agent_id: identity.agent_id,
     repo,
+    remote_name: selected.remote_name,
+    remote_url: selected.remote,
     data_dir: dataDir,
     team_file: teamPath,
     private_key: identity.private_key,
@@ -133,29 +135,32 @@ export async function createMemberConfig({ teamPath, identityPath, repoPath, dat
     await rm(configPath, { force: true });
     throw error;
   }
-  return { config, team, origin };
+  return { config, team, origin: selected.remote };
 }
 
 export async function diagnosePeer(configPath, { testPush = false } = {}) {
-  const { config, team } = await readPeerConfig(configPath);
-  const origin = await git(config.repo, 'remote', 'get-url', 'origin');
-  const main = await git(config.repo, 'ls-remote', '--heads', 'origin', 'refs/heads/main');
-  if (!main) throw new Error('shared origin is missing refs/heads/main');
-  const ledger = await git(config.repo, 'ls-remote', '--heads', 'origin', 'refs/heads/agent-collab');
+  const { config, team: cachedTeam } = await readPeerConfig(configPath);
+  const remote = await resolveRemote(config.repo, { remoteName: config.remote_name, expectedRemote: config.remote_url, legacyOrigin: !config.remote_name && !config.remote_url });
+  const ledger = await git(config.repo, 'ls-remote', '--heads', remote.remote_name, 'refs/heads/agent-collab');
+  if (config.team_registry_root && !ledger) throw new Error('signed team ledger is missing; restore agent-collab before continuing');
+  const team = config.team_registry_root ? (await loadRuntime(configPath)).store.team : cachedTeam;
+  const selected = await inspectRepository(config.repo, { remoteName: remote.remote_name, expectedRemote: remote.remote, baseBranch: teamBaseBranch(team) });
   let writeAccess = 'not checked';
   if (testPush) {
     const probe = `refs/heads/codex-collab-doctor/${process.pid}-${Date.now()}`;
-    await git(config.repo, 'push', '--dry-run', 'origin', `HEAD:${probe}`);
+    await git(config.repo, 'push', '--dry-run', selected.remote_name, `HEAD:${probe}`);
     writeAccess = 'push dry-run passed; no remote ref was created';
   }
   return {
     agent_id: config.agent_id,
     mode: config.execution_mode,
-    origin,
+    origin: selected.remote,
+    remote_name: selected.remote_name,
+    base_branch: selected.base_branch,
     team_repo: team.repo,
     checks: {
       identity: 'valid; private key matches team public key',
-      repository: 'Git root with readable origin/main',
+      repository: `Git root with readable ${selected.remote_name}/${selected.base_branch}`,
       ledger: ledger ? 'agent-collab exists' : 'not initialized; first start may create it',
       push_access: writeAccess,
       wecom: config.wecom ? 'configured; authentication requires starting the adapter' : 'not configured',
@@ -305,8 +310,9 @@ async function createAdminTeam(prompts, output) {
   const reviewer = await prompts.ask('人工审核管理员 agent ID', id);
   const defaultRoute = await prompts.ask('默认任务能力标签', capabilities[0]);
   const repo = await prompts.required('共享代码仓库标识（例如 owner/repo）');
+  const baseBranch = await prompts.ask('业务基准分支（供所有成员继承；网页向导可自动识别）', 'main');
   const teamPath = resolve(await prompts.ask('团队策略文件路径', join(homedir(), 'codex-collab-team.json')));
-  const team = buildTeamPolicy({ repo, reviewer, defaultRoute, agents, routes });
+  const team = buildTeamPolicy({ repo, reviewer, defaultRoute, agents, routes, baseBranch });
   await writeTeamPolicy(teamPath, team);
   output.write(`\n团队策略已创建：${teamPath}\n只分发此 team.json；各成员仍须在自己的电脑运行 setup 并使用自己的私钥。\n`);
   return { teamPath, identityPath: identityPaths.private_key_file, agentId: id };
@@ -335,7 +341,7 @@ async function configureWeCom(prompts, configPath, config, team, output) {
 }
 
 async function joinTeam(prompts, output, initial = {}) {
-  output.write('\n成员接入：私钥留在本机；共享仓库必须允许读取 main，并具备推送协作分支的权限。\n\n');
+  output.write('\n成员接入：私钥留在本机；共享仓库必须允许读取团队基准分支，并具备推送协作分支的权限。\n\n');
   const teamPath = resolve(initial.teamPath || await prompts.required('管理员提供的 team.json 路径'));
   const identityPath = resolve(initial.identityPath || await prompts.required('本机私有身份文件路径'));
   const identity = await readPrivateJson(identityPath);
@@ -347,10 +353,10 @@ async function joinTeam(prompts, output, initial = {}) {
   let parsedArgv;
   try { parsedArgv = JSON.parse(rawArgv); }
   catch { throw new Error('固定验证命令必须是 JSON 字符串数组，例如 ["npm", "test"]'); }
-  const { config, team, origin } = await createMemberConfig({ teamPath, identityPath, repoPath, dataDir, configPath, testArgv: parsedArgv });
-  output.write(`\n身份 ${agentId} 已验证；共享 origin：${origin}\n执行模式：desktop_poll（不启动后台 Codex SDK）\n`);
+  const { config, team } = await createMemberConfig({ teamPath, identityPath, repoPath, dataDir, configPath, testArgv: parsedArgv });
+  output.write(`\n身份 ${agentId} 已验证；共享远程：${config.remote_name}；基准分支：${teamBaseBranch(team)}\n执行模式：desktop_poll（不启动后台 Codex SDK）\n`);
 
-  if (await prompts.confirm('把本项目接入 Codex MCP + Skill？（只写本机 project config，不改 origin）', true)) {
+  if (await prompts.confirm('把本项目接入 Codex MCP + Skill？（只写本机 project config）', true)) {
     const attached = await attachProject({ configPath, repoPath: config.repo });
     output.write(`MCP 配置：${attached.mcp_config}\nSkill：${attached.skill}\n`);
   }
@@ -361,7 +367,7 @@ async function joinTeam(prompts, output, initial = {}) {
   const diagnosis = await diagnosePeer(configPath, { testPush: true });
   output.write('\n连接检查：\n');
   for (const [name, result] of Object.entries(diagnosis.checks)) output.write(`- ${name}: ${result}\n`);
-  if (await prompts.confirm('现在初始化/同步共享 agent-collab 账本分支？首次初始化会向 origin 推送该分支。', true)) {
+  if (await prompts.confirm('现在初始化/同步共享 agent-collab 账本分支？首次初始化会向所选协作远程推送该分支。', true)) {
     await loadRuntime(configPath);
     output.write('共享账本分支已就绪。\n');
   }

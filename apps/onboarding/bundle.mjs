@@ -17,9 +17,4 @@ export function decryptBundle(value, password) {
     return JSON.parse(Buffer.concat([decipher.update(Buffer.from(value.ciphertext, 'base64')), decipher.final()]).toString('utf8'));
   } catch { throw new SetupError('接入包或密码无效，请确认文件完整且密码正确。'); }
 }
-export function remoteIdentity(remote) {
-  const scp = remote.match(/^(?:[^@/]+@)?([^:/]+):(.+)$/);
-  try { const url = new URL(remote); if (['https:', 'http:', 'ssh:'].includes(url.protocol)) return `${url.hostname.toLowerCase()}/${url.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/, '')}`; } catch {}
-  if (scp && !remote.startsWith('/')) return `${scp[1].toLowerCase()}/${scp[2].replace(/\/+$/g, '').replace(/\.git$/, '')}`;
-  return remote;
-}
+export { remoteIdentity } from '../../packages/peer/repository.mjs';

@@ -1,11 +1,13 @@
+import { isBranchName, isCommit, teamBaseBranch } from './repository.mjs';
 import { stageReviewRule, stageReviewer } from './review.mjs';
 import { digest, verifyEvent } from './config.mjs';
 export const taskIdPattern = /^T-[A-Z0-9-]{1,62}$/;
 export class Conflict extends Error { constructor(message) { super(message); this.status = 409; } }
 export class Denied extends Error { constructor(message) { super(message); this.status = 403; } }
 export function validateSpec(spec, team) {
-  if (spec?.schema_version !== 2 || !taskIdPattern.test(spec.id ?? '') || spec.repo !== team.repo || typeof spec.title !== 'string' || !spec.title.trim() || spec.title.length > 200 || spec.base_branch !== 'main' || !Array.isArray(spec.acceptance) || !spec.acceptance.length || spec.acceptance.some((v) => typeof v !== 'string' || !v.trim() || v.length > 1000)) throw new Error('invalid peer task specification');
-  const allowed = new Set(['schema_version', 'id', 'repo', 'title', 'description', 'base_branch', 'acceptance', 'workflow', 'execution_mode', 'source']);
+  if (![2, 3].includes(spec?.schema_version) || !taskIdPattern.test(spec.id ?? '') || spec.repo !== team.repo || typeof spec.title !== 'string' || !spec.title.trim() || spec.title.length > 200 || !isBranchName(spec.base_branch) || !Array.isArray(spec.acceptance) || !spec.acceptance.length || spec.acceptance.some((v) => typeof v !== 'string' || !v.trim() || v.length > 1000)) throw new Error('invalid peer task specification');
+  if (spec.schema_version === 2 ? spec.base_branch !== 'main' || team.base_branch !== undefined : spec.base_branch !== teamBaseBranch(team) || !isCommit(spec.base_commit)) throw new Error('task must use the pinned team base branch and starting commit');
+  const allowed = new Set(['schema_version', 'id', 'repo', 'title', 'description', 'base_branch', 'acceptance', 'workflow', 'execution_mode', 'source', ...(spec.schema_version === 3 ? ['base_commit'] : [])]);
   if (Object.keys(spec).some((key) => !allowed.has(key))) throw new Error('peer task specification contains unsupported fields');
   if (spec.acceptance.length > 32 || spec.description !== undefined && (typeof spec.description !== 'string' || spec.description.length > 4000)) throw new Error('invalid task description/acceptance');
   if (spec.execution_mode !== undefined && !['automatic', 'desktop', 'desktop_poll'].includes(spec.execution_mode)) throw new Error('invalid task execution mode');
