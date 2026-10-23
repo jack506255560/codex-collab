@@ -221,10 +221,10 @@ async function refreshFixture() {
   } catch (error) { await f.cleanup(); throw error; }
 }
 
-test('refresh upgrades a known legacy Skill, preserves other settings/resources and is idempotent', async () => {
+for (const version of ['0.4.3', '0.5.0']) test(`refresh upgrades the ${version} Skill, preserves other settings/resources and is idempotent`, async () => {
   const f = await refreshFixture();
   try {
-    const original = await readFile(join(root, 'scripts/peer/test/fixtures/team-collab-desktop-0.4.3.md'), 'utf8');
+    const original = await readFile(join(root, `scripts/peer/test/fixtures/team-collab-desktop-${version}.md`), 'utf8');
     await writeFile(f.skill, original);
     const unrelated = 'model = "existing-provider-model"\n[mcp_servers.other]\ncommand = "other-tool"\n';
     const before = unrelated + await readFile(f.mcp_config, 'utf8');
