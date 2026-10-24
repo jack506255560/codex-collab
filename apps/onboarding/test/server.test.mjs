@@ -107,3 +107,17 @@ test('reissue endpoint requires local authenticated browser and hides unexpected
     assert.equal(failed.status, 400); assert.doesNotMatch(await failed.text(), /unsafe-failure-secret|SDK/);
   } finally { await app.close(); }
 });
+
+test('project read endpoint requires a browser session and passes the local-only option without permitting writes', async () => {
+  const calls = [], manager = { close() {}, exclusive(fn) { return fn(); }, async project(id, options) { calls.push([id, options]); return { id, agents: [] }; } };
+  const app = await startSetupServer({ manager });
+  try {
+    assert.equal((await fetch(`${app.origin}/api/project?id=fixture`)).status, 401); assert.equal(calls.length, 0);
+    const session = await fetch(`${app.origin}/api/session`, { method: 'POST', headers: { Origin: app.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ token: app.token }) });
+    const headers = { Cookie: session.headers.get('set-cookie').split(';')[0] };
+    assert.deepEqual(await (await fetch(`${app.origin}/api/project?id=fixture&local=1`, { headers })).json(), { id: 'fixture', agents: [] });
+    assert.equal((await fetch(`${app.origin}/api/project?id=fixture`, { headers })).status, 200);
+    assert.deepEqual(calls, [['fixture', { localOnly: true }], ['fixture', { localOnly: false }]]);
+    assert.equal((await fetch(`${app.origin}/api/project`, { method: 'POST', headers: { ...headers, Origin: app.origin, 'Content-Type': 'application/json' }, body: '{}' })).status, 404);
+  } finally { await app.close(); }
+});

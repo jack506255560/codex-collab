@@ -36,6 +36,7 @@ export async function startSetupServer({ manager = new SetupManager(), port = 0 
       if (req.method === 'GET' && url.pathname === '/api/overview') return json(200, await manager.overview());
       if (req.method === 'GET' && url.pathname === '/api/admin-draft') return json(200, await manager.exclusive(() => manager.adminDraft({ id: url.searchParams.get('id') })));
       if (req.method === 'GET' && url.pathname === '/api/discovery') return json(200, manager.discovery.view(url.searchParams.get('id')));
+      if (req.method === 'GET' && url.pathname === '/api/project') return json(200, await manager.exclusive(() => manager.project(url.searchParams.get('id'), { localOnly: url.searchParams.get('local') === '1' })));
       if (req.method === 'GET' && url.pathname === '/api/profile') return json(200, await manager.exclusive(() => manager.detail(url.searchParams.get('id'), { localOnly: url.searchParams.get('local') === '1' })));
       if (req.method === 'GET' && url.pathname === '/api/export') {
         const value = await manager.exclusive(() => manager.exportedBundle(url.searchParams.get('id'), url.searchParams.get('invite')));

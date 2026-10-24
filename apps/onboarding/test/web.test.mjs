@@ -17,7 +17,7 @@ class Element {
 async function page(route, storage = new Map()) {
   const ids = new Map(), calls = [], timers = new Map(); let timerId = 0;
   const element = (id) => { if (!ids.has(id)) ids.set(id, new Element(id)); return ids.get(id); };
-  const sections = ['home', 'admin', 'join', 'own', 'existing', 'verification', 'profile', 'reset-view'].map(element);
+  const sections = ['home', 'project', 'admin', 'join', 'own', 'existing', 'verification', 'profile', 'reset-view'].map(element);
   const context = vm.createContext({
     document: { getElementById: element, createElement: (tag) => new Element(tag), querySelectorAll: (selector) => selector === 'main>section' ? sections : [] },
     FormData: class { constructor(form) { return Object.entries(form.input)[Symbol.iterator](); } },
@@ -405,4 +405,63 @@ test('admin repository settings save the loaded signed policy version and select
   p.element('team-base-branch').value = 'develop'; await p.submit('repository-policy-form', {});
   assert.equal(saved.id, 'admin'); assert.equal(saved.expected_version, 7); assert.equal(saved.base_branch, 'develop');
   assert.match(p.element('profile-repo').textContent, /upstream\/develop/); assert.match(p.element('notice').textContent, /已有任务保留/);
+});
+
+const projectFixture = () => ({ id: 'project-one', name: 'product', repository: 'example.invalid/team/product', local_agent_count: 2,
+  admin_profile_id: 'alice-profile', base_branch: 'develop', sync_status: 'synced', agents: [
+    { agent_id: 'alice', role: 'admin', capabilities: ['backend'], mine: true, registered: true,
+      connections: [{ id: 'alice-profile', display_name: 'Alice', repo: '/fixture/alice', phase: 'ready', runner_online: true, bound: false }] },
+    { agent_id: 'bob', role: 'member', capabilities: ['frontend'], mine: false, registered: true, connections: [] },
+    { agent_id: 'carol', role: 'member', capabilities: ['testing'], mine: true, registered: true, connections: [] },
+  ] });
+const descendants = (node) => [node, ...node.children.flatMap(descendants)];
+
+test('home opens one project with a unified roster and local management, then returns from its robot', async () => {
+  const project = projectFixture();
+  const overview = { projects: [project], profiles: [{ id: 'alice-profile' }, { id: 'another-profile' }] };
+  const p = await page((path) => path === '/api/overview' ? overview : path.startsWith('/api/project?') ? project
+    : path.startsWith('/api/profile?') ? { ...member('ready'), id: 'alice-profile', project_id: project.id } : assert.fail(`unexpected ${path}`));
+  assert.equal(p.element('profiles').children.length, 1); assert.equal(p.element('project-count').textContent, '1 个项目');
+  await p.activate(p.element('profiles').children[0].children[1]);
+  assert.equal(p.element('project').hidden, false); assert.equal(p.element('home').hidden, true);
+  assert.equal(p.element('project-agents').children.length, 3);
+  assert.equal(descendants(p.element('project-agents')).filter((node) => node.textContent === '我的').length, 2);
+  assert.equal(descendants(p.element('project-agents').children[1]).filter((node) => node.tagName === 'button').length, 0);
+  assert.equal(p.element('project-add-own').hidden, false);
+  await p.tick();
+  const robot = p.element('project-agents').children[0]; await p.tick();
+  assert.equal(p.element('project-agents').children[0], robot, 'identical automatic refresh preserves DOM and focus');
+  await p.activate(descendants(robot).find((node) => node.tagName === 'button'));
+  assert.equal(p.element('profile').hidden, false); assert.equal(p.element('profile-back').hidden, false);
+  await p.click('profile-back'); assert.equal(p.element('project').hidden, false);
+  await p.click('project-back'); assert.equal(p.element('home').hidden, false);
+});
+
+test('saved project restores directly and add-own cancellation returns to the originating project', async () => {
+  const project = projectFixture(), storage = new Map([['codex-collab-onboarding', JSON.stringify({ project_id: project.id })]]);
+  const p = await page((path) => path === '/api/overview' ? { profiles: [], projects: [project] } : path.startsWith('/api/project?') ? project : assert.fail(`unexpected ${path}`), storage);
+  assert.equal(p.element('project').hidden, false); assert.equal(p.element('project-title').textContent, 'product');
+  await p.click('project-add-own'); assert.equal(p.element('own').hidden, false);
+  await p.click('own-cancel'); assert.equal(p.element('project').hidden, false);
+  assert.equal(p.calls.filter((path) => path.startsWith('/api/profile?')).length, 0);
+});
+
+test('member project hides administrative actions and background pages skip automatic project sync', async () => {
+  const project = { ...projectFixture(), admin_profile_id: null };
+  const p = await page((path) => path === '/api/overview' ? { profiles: [{ id: 'bob' }], projects: [project] } : project);
+  await p.activate(p.element('profiles').children[0].children[1]);
+  assert.equal(p.element('project-add-own').hidden, true); assert.equal(p.element('project-settings').hidden, true);
+  p.context.document.visibilityState = 'hidden'; const count = p.calls.length; await p.tick(); assert.equal(p.calls.length, count);
+  p.context.document.visibilityState = 'visible'; await p.tick(); assert.equal(p.calls.length, count + 1);
+});
+
+test('delayed project refresh cannot replace a different project selected by the user', async () => {
+  const first = projectFixture(), second = { ...projectFixture(), id: 'project-two', name: 'another-project' };
+  let resolve;
+  const p = await page((path) => path === '/api/overview' ? { profiles: [{ id: 'alice' }], projects: [first, second] }
+    : path.includes('id=project-two') ? second : path.includes('local=1') ? first : new Promise((done) => { resolve = done; }));
+  await p.activate(p.element('profiles').children[0].children[1]);
+  const refreshing = p.tick(); await p.settle();
+  await p.context.loadProject(second.id); resolve({ ...first, name: 'stale' }); await refreshing;
+  assert.equal(p.element('project-title').textContent, second.name);
 });

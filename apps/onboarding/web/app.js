@@ -1,12 +1,12 @@
 const $ = (id) => document.getElementById(id);
 let currentId, pending, discovery, timer, busy = false, reviewVersion = null, reviewId, ownAdminId, resetPlan, resetDiscovery;
-let repositoryPolicy;
+let repositoryPolicy, currentProjectId, currentProject, projectSignature, ownReturnProject;
 let viewEpoch = 0, currentView = 'home', completing = false, deliveryTarget;
 const storageKey = 'codex-collab-onboarding';
 function remember(value) { try { if (value) sessionStorage.setItem(storageKey, JSON.stringify(value)); else sessionStorage.removeItem(storageKey); } catch {} }
 function remembered() { try { return JSON.parse(sessionStorage.getItem(storageKey) || 'null'); } catch { return null; } }
 function notice(text) { $('notice').textContent = text; $('notice').hidden = !text; }
-function show(view) { if (view !== 'profile' || currentView === 'profile') { $('delivery-panel').hidden = true; $('delivery-password').value = ''; $('delivery-instructions').textContent = ''; $('reissue-secret').value = ''; $('reissue-form').hidden = true; deliveryTarget = null; } clearInterval(timer); clearTimeout(timer); viewEpoch++; currentView = view; for (const section of document.querySelectorAll('main>section')) section.hidden = section.id !== view; }
+function show(view) { notice(''); const active = ['project', 'profile', 'own', 'reset-view'].includes(view) ? 'home' : view; for (const link of document.querySelectorAll('nav [data-view]')) { if (link.dataset.view === active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); } if (view !== 'profile' || currentView === 'profile') { $('delivery-panel').hidden = true; $('delivery-password').value = ''; $('delivery-instructions').textContent = ''; $('reissue-secret').value = ''; $('reissue-form').hidden = true; deliveryTarget = null; } clearInterval(timer); clearTimeout(timer); viewEpoch++; currentView = view; for (const section of document.querySelectorAll('main>section')) section.hidden = section.id !== view; }
 async function api(path, body) {
   const response = await fetch(`/api/${path}`, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
   const value = await response.json(); if (!response.ok) throw new Error(value.error); return value;
@@ -36,13 +36,94 @@ async function overview() {
     const card = document.createElement('div'); card.className = 'card';
     card.append(text('span', `${draft.display_name || draft.agent_id} · 待完成群验证`), button('继续创建团队', () => openDraft(draft.id))); $('profiles').append(card);
   }
+  $('project-count').textContent = value.projects ? `${value.projects.length} 个项目` : '';
+  for (const [index, project] of (value.projects || []).entries()) {
+    const card = document.createElement('div'); card.className = 'card project-card'; card.style?.setProperty('--order', Math.min(index, 7));
+    const info = document.createElement('div'); info.className = 'project-card-info';
+    const icon = text('span', project.name.slice(0, 1).toUpperCase()); icon.className = 'project-icon'; icon.setAttribute?.('aria-hidden', 'true');
+    info.append(icon, text('h3', project.name), text('p', project.repository || '本机接入'), text('span', `本机已接入 ${project.local_agent_count} 个机器人`));
+    card.append(info, button('打开项目 ↗', () => loadProject(project.id))); $('profiles').append(card);
+  }
   if (!value.profiles.length && !(value.drafts || []).length) $('profiles').append(text('p', '还没有接入项目。选择“连接我的机器人”，或导入同事提供的接入包。'));
-  for (const profile of value.profiles) {
+  for (const profile of value.projects ? [] : value.profiles) {
     const card = document.createElement('div'); card.className = 'card'; const info = document.createElement('div');
     info.append(text('strong', `${profile.display_name || profile.agent_id} · ${profile.role === 'admin' ? '管理员' : '成员'}`), text('p', profile.repo));
     card.append(info, button('打开项目', () => loadProfile(profile.id))); $('profiles').append(card);
   }
 }
+function connectionStatus(connection) {
+  if (connection.has_error) return '需要检查';
+  if (connection.phase !== 'ready') return ({ imported: '待群验证', waiting: '待管理员确认', verified: '正在入队', configuring: '正在配置', initializing: '正在初始化' })[connection.phase] || '待完成接入';
+  if (connection.can_receive_tasks) return '已就绪';
+  if (!connection.runner_online) return '连接已停止';
+  if (!connection.bound) return '待绑定对话';
+  if (!connection.poll_recent) return '等待对话轮询';
+  return '连接检查中';
+}
+function renderProject(value) {
+  currentProject = value;
+  $('project-title').textContent = value.name;
+  $('project-repository').textContent = value.repository;
+  $('project-sync').textContent = value.sync_error || (value.sync_status === 'synced' ? '团队信息已同步。连接状态仅显示本机实际记录。' : value.sync_status === 'cached' ? '正在显示本机已验证的团队记录。' : '接入尚未完成，可以继续配置下面的机器人。');
+  $('project-add-own').hidden = !value.admin_profile_id; $('project-settings').hidden = !value.admin_profile_id;
+  const signature = JSON.stringify(value);
+  if (signature === projectSignature) return;
+  projectSignature = signature;
+  $('project-summary').replaceChildren();
+  for (const [number, label] of [[value.agents.length, '项目机器人'], [value.agents.filter((agent) => agent.mine).length, '属于我'], [value.base_branch || '待确认', '任务基准分支']]) {
+    const stat = document.createElement('div'); stat.className = 'summary-item'; stat.append(text('strong', String(number)), text('span', label)); $('project-summary').append(stat);
+  }
+  $('project-agents').replaceChildren();
+  for (const [index, agent] of value.agents.entries()) {
+    const card = document.createElement('article'); card.className = `robot-card${agent.mine ? ' is-mine' : ''}`; card.style?.setProperty('--order', Math.min(index, 7));
+    const heading = document.createElement('div'); heading.className = 'robot-title';
+    const connection = agent.connections[0];
+    const display = connection?.display_name;
+    heading.append(text('h4', display && display !== agent.agent_id ? `${display}（${agent.agent_id}）` : agent.agent_id));
+    if (agent.mine) { const mine = text('span', '我的'); mine.className = 'badge mine-badge'; heading.append(mine); }
+    card.append(heading, text('p', `${agent.role === 'admin' ? '管理员' : '成员'}${agent.capabilities.length ? ' · ' + agent.capabilities.join(' / ') : ''}`));
+    if (agent.identity_conflict) { const warning = text('p', '本机身份与团队记录不一致，请检查原接入。'); warning.className = 'warning-text'; card.append(warning); }
+    for (const local of agent.connections) {
+      const details = document.createElement('div'); details.className = 'robot-connection';
+      const status = text('span', connectionStatus(local)); status.className = `badge${local.can_receive_tasks ? ' ready-badge' : ' pending'}`;
+      const path = text('p', local.repo); path.className = 'repository-path';
+      details.append(status, path, button(local.phase === 'ready' ? '管理机器人' : '继续接入', () => loadProfile(local.id))); card.append(details);
+    }
+    if (!agent.connections.length) { const note = text('p', agent.mine ? '我的机器人 · 未在本机接入' : '由同事维护'); note.className = 'muted'; card.append(note); }
+    $('project-agents').append(card);
+  }
+}
+async function refreshProjectView(id, epoch) {
+  const value = await api(`project?id=${encodeURIComponent(id)}`);
+  if (epoch === viewEpoch && currentView === 'project') renderProject(value);
+}
+function watchProject(id, epoch, delay = 15000) {
+  timer = setTimeout(async () => {
+    if (epoch !== viewEpoch || currentView !== 'project') return;
+    if (!busy && document.visibilityState !== 'hidden') {
+      try { await refreshProjectView(id, epoch); }
+      catch (error) { if (epoch === viewEpoch) $('project-sync').textContent = `自动同步暂未成功，将重试。${error.message}`; }
+    }
+    if (epoch === viewEpoch) watchProject(id, epoch);
+  }, delay);
+}
+async function loadProject(id) {
+  currentProjectId = id; projectSignature = null; currentProject = null;
+  remember({ project_id: id }); show('project'); const epoch = viewEpoch;
+  $('project-title').textContent = '正在打开项目'; $('project-repository').textContent = '';
+  $('project-summary').replaceChildren(); $('project-agents').replaceChildren();
+  $('project-add-own').hidden = true; $('project-settings').hidden = true; $('project-sync').textContent = '';
+  try {
+    const value = await api(`project?id=${encodeURIComponent(id)}&local=1`);
+    if (epoch !== viewEpoch) return;
+    renderProject(value); watchProject(id, epoch, 100);
+  } catch (error) { if (epoch === viewEpoch) { show('home'); await overview(); throw error; } }
+}
+$('project-back').onclick = () => action(async () => { remember(null); show('home'); await overview(); });
+$('project-refresh').onclick = () => action(() => refreshProjectView(currentProjectId, viewEpoch));
+$('project-settings').onclick = () => action(() => loadProfile(currentProject.admin_profile_id));
+$('project-add-own').onclick = () => action(async () => { ownAdminId = currentProject.admin_profile_id; ownReturnProject = currentProjectId; show('own'); });
+$('profile-back').onclick = () => action(() => loadProject(currentProjectId));
 async function openDraft(id) {
   const value = await api(`admin-draft?id=${id}`);
   if (value.profile) { pending = null; await loadProfile(value.profile.id); return; }
@@ -120,6 +201,8 @@ async function loadProfile(id) {
   try { value = await api(`profile?id=${id}`); } catch (error) { value = await api(`profile?id=${id}&local=1`); notice(`团队同步暂未成功，本机状态仍可查看。${error.message}`); }
   if (epoch !== viewEpoch) return;
   if (value.phase === 'removed') { show('home'); await overview(); return; }
+  currentProjectId = value.project_id || null;
+  $('profile-back').hidden = !currentProjectId;
   renderProfile(value); watchProfile(id, epoch); return value;
 }
 function renderProfile(value, automatic = false) {
@@ -199,7 +282,15 @@ $('review-form').onsubmit = (event) => { event.preventDefault(); action(async ()
   await api('review-rules', { id: currentId, expected_version: reviewVersion, review_rules });
   await loadProfile(currentId); notice('审核规则已保存，新任务将使用此规则。');
 }); };
-for (const button of document.querySelectorAll('[data-view]')) button.onclick = () => action(async () => { clearInterval(timer); if (resetPlan) { await api('reset-cancel', { id: resetPlan.id, preview_token: resetPlan.preview_token }); resetPlan = null; resetDiscovery = null; $('reset-secret').value = ''; } remember(null); show(button.dataset.view); if (button.dataset.view === 'home') await overview(); if (button.dataset.view === 'admin' && $('admin-form').elements.repo.value) await checkProject(); });
+for (const link of document.querySelectorAll('[data-view]')) link.onclick = (event) => {
+  event.preventDefault();
+  return action(async () => {
+    if (resetPlan) { await api('reset-cancel', { id: resetPlan.id, preview_token: resetPlan.preview_token }); resetPlan = null; resetDiscovery = null; $('reset-secret').value = ''; }
+    remember(null); show(link.dataset.view);
+    if (link.dataset.view === 'home') await overview();
+    if (link.dataset.view === 'admin' && $('admin-form').elements.repo.value) await checkProject();
+  });
+};
 function repoMode(prefix) {
   const clone = $(`${prefix}-repo-mode`).value === 'clone'; $(`${prefix}-existing-repo`).hidden = clone; $(`${prefix}-clone-repo`).hidden = !clone;
 }
@@ -282,8 +373,8 @@ async function connectMember(profile) {
   try { await verifyView(await api('discovery', { profile_id: profile.id })); }
   catch (error) { await loadProfile(profile.id); throw error; }
 }
-$('add-own-agent').onclick = () => action(async () => { ownAdminId = currentId; show('own'); });
-$('own-cancel').onclick = () => action(() => loadProfile(ownAdminId));
+$('add-own-agent').onclick = () => action(async () => { ownAdminId = currentId; ownReturnProject = null; show('own'); });
+$('own-cancel').onclick = () => action(() => ownReturnProject ? loadProject(ownReturnProject) : loadProfile(ownAdminId));
 $('own-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
   const input = values(event.target); input.id = ownAdminId; input.prefer = event.target.elements.prefer.checked;
   let profile;
@@ -409,7 +500,10 @@ $('hide-delivery').onclick = () => action(async () => { $('delivery-panel').hidd
 assignmentRow();
 action(async () => {
   const token = location.hash.slice(1); if (token) { await api('session', { token }); history.replaceState(null, '', '/'); }
-  const saved = remembered(); await overview();
-  try { if (saved?.draft_id) await openDraft(saved.draft_id); else if (saved?.profile_id) { const value = await loadProfile(saved.profile_id); if (value?.phase === 'imported') await connectMember(value); } }
+  const saved = remembered(); show('home'); await overview();
+  try { if (saved?.draft_id) await openDraft(saved.draft_id); else if (saved?.profile_id) { const value = await loadProfile(saved.profile_id); if (value?.phase === 'imported') await connectMember(value); } else if (saved?.project_id) await loadProject(saved.project_id); }
   catch (error) { remember(null); show('home'); notice(`上次接入暂时无法恢复，可以从项目列表继续。${error.message}`); }
 });
+
+function updateMotion() { if (document.documentElement) document.documentElement.dataset.pageHidden = String(document.visibilityState === 'hidden'); }
+document.addEventListener?.('visibilitychange', updateMotion); updateMotion();

@@ -1,6 +1,7 @@
 import { inspectRepository, RepositoryError, resolveRemote, teamBaseBranch } from '../../packages/peer/repository.mjs';
 import { defaultReviewRules } from '../../packages/peer/review.mjs';
 import { SetupError } from './errors.mjs';
+import { groupProjects, projectId, projectView } from './projects.mjs';
 import { createPublicKey, randomBytes, randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -118,12 +119,18 @@ export class SetupManager {
     return new PeerGitStore({ remoteName: state.remote_name, remoteUrl: state.remote, repo: state.repo, dataDir: state.data_dir || join(this.path(state.id), 'data'), team: initial,
       agentId: state.agent_id, privateKey: identity.private_key, registryRoot: state.root_hash, enrollmentOnly }).init();
   }
+  async localStates() {
+    await mkdir(join(this.home, 'profiles'), { recursive: true, mode: 0o700 });
+    const ids = (await readdir(join(this.home, 'profiles'))).filter((id) => uuidPattern.test(id)).sort();
+    return Promise.all(ids.map((id) => this.state(id)));
+  }
+  project(id, options) { return projectView(this, id, options); }
   async overview() {
     await mkdir(join(this.home, 'profiles'), { recursive: true, mode: 0o700 });
-    const entries = (await readdir(join(this.home, 'profiles'))).filter((id) => uuidPattern.test(id));
+    const states = await this.localStates();
     const profiles = [], removed_profiles = [];
-    for (const id of entries) {
-      const state = await this.state(id);
+    for (const state of states) {
+      const id = state.id;
       (state.phase === 'removed' ? removed_profiles : profiles).push({ id, agent_id: state.agent_id, role: state.role, display_name: state.display_name || state.agent_id, repo: state.repo, phase: state.phase, error: state.last_error || null });
     }
     const drafts = [];
@@ -133,7 +140,7 @@ export class SetupManager {
       if (!draft.profile_id) drafts.push({ id: draft.id, agent_id: draft.input.agent_id, display_name: draft.input.display_name, repo: draft.input.repo });
     }
     let context = {}; try { context = await readPrivateJson(join(this.home, 'context.json')); } catch {}
-    return { profiles, removed_profiles, drafts, defaults: await localDefaults(context.cwd || this.home), startup: await startupStatus(this.home) };
+    return { projects: groupProjects(states), profiles, removed_profiles, drafts, defaults: await localDefaults(context.cwd || this.home), startup: await startupStatus(this.home) };
   }
   async checkBotAvailable(botId) {
     for (const profile of (await this.overview()).profiles) {
@@ -707,7 +714,7 @@ export class SetupManager {
     return this.detail(id);
   }
   async detail(id, { localOnly = false } = {}) {
-    const state = await this.state(id); const result = { id, agent_id: state.agent_id, display_name: state.display_name || state.agent_id, team_name: state.team_name || null, role: state.role, repo: state.repo, phase: state.phase, own_agent: !!state.own_admin_id, error: state.last_error || null };
+    const state = await this.state(id); const result = { id, project_id: projectId(state), agent_id: state.agent_id, display_name: state.display_name || state.agent_id, team_name: state.team_name || null, role: state.role, repo: state.repo, phase: state.phase, own_agent: !!state.own_admin_id, error: state.last_error || null };
     if (state.phase === 'imported') result.assignment = { capabilities: state.bundle.invitation.capabilities, bot_id: state.bundle.invitation.bot_id,
       expires_at: state.bundle.invitation.expires_at };
     let synchronized;
