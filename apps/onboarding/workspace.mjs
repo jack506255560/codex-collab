@@ -31,6 +31,6 @@ export async function selectProfile({ home = workspaceHome(), selector, cwd = pr
     }
   }
   if (choices.length === 1) return choices[0];
-  if (!choices.length) throw new Error('未找到已接入项目。请先运行 codex-collab 完成接入。');
+  if (!choices.length) throw new Error('未找到已接入项目。请先运行 codex-collab setup 完成接入。');
   throw new Error(`找到多个接入，请使用 --profile <项目ID> 选择：\n${choices.map((state) => `${state.id}  ${state.agent_id}  ${state.repo}`).join('\n')}`);
 }

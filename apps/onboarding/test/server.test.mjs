@@ -22,7 +22,7 @@ test('wizard APIs require local Host, matching Origin and personal cookie, rejec
     const failure = await post('discovery', {}, headers); assert.equal(failure.status, 400); assert.doesNotMatch(await failure.text(), /SECRET|credentials/);
     assert.equal((await post('constructor', {}, headers)).status, 404);
     assert.equal((await post('discovery', { content: 'x'.repeat(760000) }, headers)).status, 413);
-    const page = await fetch(app.origin); assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/); assert.match(await page.text(), /连接我的机器人/);
+    const page = await fetch(app.origin); assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/); assert.match(await page.text(), /接入一个项目/);
   } finally { await app.close(); }
   assert.equal(closed, true);
 });
@@ -119,5 +119,17 @@ test('project read endpoint requires a browser session and passes the local-only
     assert.equal((await fetch(`${app.origin}/api/project?id=fixture`, { headers })).status, 200);
     assert.deepEqual(calls, [['fixture', { localOnly: true }], ['fixture', { localOnly: false }]]);
     assert.equal((await fetch(`${app.origin}/api/project`, { method: 'POST', headers: { ...headers, Origin: app.origin, 'Content-Type': 'application/json' }, body: '{}' })).status, 404);
+  } finally { await app.close(); }
+});
+
+
+test('wizard illustration icon is bundled locally and served under the same CSP', async () => {
+  const app = await startSetupServer({ manager: { close() {} } });
+  try {
+    const response = await fetch(`${app.origin}/favicon.svg`);
+    assert.equal(response.status, 200); assert.equal(response.headers.get('content-type'), 'image/svg+xml');
+    assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
+    assert.match(await response.text(), /<svg/);
+    assert.match(await (await fetch(app.origin)).text(), /href="\/favicon.svg"/);
   } finally { await app.close(); }
 });

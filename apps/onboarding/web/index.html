@@ -1,39 +1,673 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Collab · 团队接入</title><link rel="stylesheet" href="/style.css"></head><body>
-<div class="ambient" aria-hidden="true"><i></i><i></i></div><header><a class="brand" href="/" data-view="home" aria-label="Codex Collab 首页"><span class="brand-mark" aria-hidden="true">C</span>Codex Collab</a><span class="workspace-label"><span class="status-dot" aria-hidden="true"></span>本机协作工作台</span></header>
-<main><div class="hero"><p class="eyebrow">YOUR TEAM, IN SYNC</p><h1>一个项目，<span>一支协作队伍。</span></h1><p class="intro">连接群机器人与 Codex 对话，让任务在团队中有序接力。</p></div><div id="notice" role="status" hidden></div>
-<nav><button data-view="home">我的项目</button><button data-view="admin">连接我的机器人</button><button data-view="join">接受同事邀请</button><button data-view="existing">导入已有配置</button></nav>
-<section id="home"><div class="entry-options"><button data-view="admin">连接我的机器人<small>首次接入，或为团队建立协作项目</small></button><button data-view="join">接受同事邀请<small>已有接入包，自动带入机器人和项目信息</small></button></div><p id="startup-status" class="muted"></p><div class="section-heading"><div><p class="eyebrow">PROJECTS</p><h2>我的项目</h2></div><span class="muted" id="project-count"></span></div><div id="profiles" class="project-grid"></div><details id="removed-projects" hidden><summary>已移除的接入</summary><p class="muted">本机身份与恢复记录保留。恢复前请确保原 clone 未绑定其他身份。</p><div id="removed-profiles"></div></details></section>
-<section id="project" hidden><button id="project-back" class="back-button secondary">← 我的项目</button><div class="section-heading"><div><p class="eyebrow">PROJECT WORKSPACE</p><h2 id="project-title"></h2></div><button id="project-refresh" class="secondary">刷新项目</button></div><p id="project-repository" class="repository-path"></p><div id="project-summary" class="project-summary"></div><p id="project-sync" class="muted" role="status"></p><div class="section-heading robot-heading"><h3>项目机器人</h3><div class="manage-actions"><button id="project-add-own" hidden>添加我的机器人</button><button id="project-settings" class="secondary" hidden>团队管理</button></div></div><div id="project-agents" class="robot-grid"></div></section>
-<section id="admin" hidden><h2>连接我的机器人</h2><p>先在企业微信创建智能机器人并加入协作群。这里会通过群验证码自动获取群和你的 userid。</p>
-<form id="admin-form">
-<fieldset><legend>选择业务项目</legend><label>项目来源<select id="admin-repo-mode" name="repo_mode"><option value="existing">使用本机已有项目</option><option value="clone">从 Git 地址拉取新项目</option></select></label>
-<label id="admin-existing-repo">项目目录<input name="repo" id="admin-repo" placeholder="Git 仓库根目录的完整路径"></label>
-<div id="admin-clone-repo" hidden><label>Git 仓库地址<input name="remote" id="admin-remote" placeholder="HTTPS 或 SSH 地址，不含 Token"></label><label>保存到新目录（可选）<input name="destination" id="admin-destination" placeholder="留空按项目与名称生成独立目录"></label></div>
-<button id="check-project" type="button" class="secondary">检查项目并推荐验证命令</button><p id="project-recommendation" class="muted">使用本机已有的 Git 登录，自动识别远程仓库和默认分支；无法确定时只需选择一次。</p>
-<div id="repository-options" hidden><label>协作远程<select name="remote_name" id="admin-remote-name"><option value="">自动识别</option></select></label><label>业务基准分支<select name="base_branch" id="admin-base-branch"><option value="">使用远程默认分支</option></select></label><p class="muted">同事和新增机器人会继承这个基准分支。每个新任务固定起始提交，后续分支更新不会改变已有任务。</p></div>
-<label>验证命令<input id="test-command" name="test_command" required placeholder="例如 npm test、go test ./...、sh test.sh"></label><p class="muted">请确认这个命令适合项目。工具使用固定程序和参数执行，不运行管道或拼接命令。</p></fieldset>
-<div class="row"><label>你的显示名称<input name="display_name" required placeholder="例如 Alice 或张三" maxlength="80"></label><label>主要职责<select name="responsibility"><option value="fullstack">全栈开发</option><option value="frontend">前端开发</option><option value="backend">后端开发</option><option value="testing">测试</option><option value="docs">文档</option><option value="general">通用开发</option></select></label></div>
-<details><summary>更多设置：团队名称、内部身份与职责</summary><label>团队名称（可选）<input name="team_name" placeholder="留空使用项目名称" maxlength="80"></label><label>内部 Agent ID（可选）<input name="agent_id" pattern="[a-zA-Z0-9_-]{1,64}" placeholder="留空自动生成"></label><label>自定义职责标签（可选）<input name="capabilities" placeholder="英文标签，以逗号分隔"></label></details>
-<div class="row"><label>你的机器人 Bot ID<input name="bot_id" required autocomplete="off"></label><label>机器人 Secret<input name="secret" type="password" required autocomplete="off"></label></div>
-<button type="submit">连接并进入群验证</button></form></section>
-<section id="own" hidden><h2>给自己增加机器人</h2><p>同一个企业微信账号可以拥有多个 Agent。每个 Agent 使用独立机器人、独立 clone 和独立 Codex 对话。验证后自动完成本机接入，无需下载接入包。</p>
-<form id="own-form"><label>准备项目<select id="own-repo-mode" name="repo_mode"><option value="clone">自动拉取独立项目</option><option value="existing">使用已有的独立 clone</option></select></label><label id="own-clone-repo">新项目目录（可选）<input name="destination" placeholder="留空按项目和 Agent 名称创建"></label><label id="own-existing-repo" hidden>另一个 clone 的本机目录<input name="repo" placeholder="同一业务仓库的另一个独立 clone"></label><div class="row"><label>新的 Agent 名称<input name="agent_id" required pattern="[a-zA-Z0-9_-]{1,64}" placeholder="bob"></label><label>职责标签<input name="capabilities" required placeholder="backend"></label></div><div class="row"><label>新机器人 Bot ID<input name="bot_id" required autocomplete="off"></label><label>新机器人 Secret<input name="secret" type="password" required autocomplete="off"></label></div><label class="checkbox"><input name="prefer" type="checkbox" checked>该 Agent 为这些职责的首选执行者</label><button type="submit">连接我的新机器人</button><button id="own-cancel" type="button" class="secondary">返回原项目</button></form></section>
-<section id="join" hidden><h2>接受同事邀请</h2><p>导入管理员提供的加密接入包。机器人、职责和仓库信息会自动带入，密码请向管理员单独获取。</p>
-<form id="join-form"><label>接入包文件<input name="file" id="invite-file" type="file" accept=".json" required></label><label>接入包密码<input name="password" id="invite-password" type="password" required autocomplete="off"></label>
-<button id="inspect-invite" type="button" class="secondary">重新读取接入信息</button><div id="invite-info" hidden><p id="invite-summary"></p><p id="invite-remote" class="muted"></p></div>
-<label>准备项目<select id="join-repo-mode" name="repo_mode"><option value="clone">帮我拉取到新目录</option><option value="existing">使用本机已有项目</option></select></label>
-<label id="join-clone-repo">新项目目录<input name="destination" placeholder="留空使用推荐目录，亦可填写完整路径"></label>
-<label id="join-existing-repo" hidden>已有项目目录<input name="repo" placeholder="Git 仓库根目录的完整路径"></label>
-<button type="submit">接入我的机器人</button><p class="muted">工具使用本机 Git 登录拉取代码，不会改写已有目录。导入后请按提示在群里确认一次身份，审批和配置会自动继续。</p></form></section>
-<section id="existing" hidden><h2>导入已有协作项目</h2><p>先停止原 Runner。导入会保留原成员身份、任务和对话绑定，并重新启动机器人。旧团队由管理员先导入。</p><form id="existing-form"><label>已有私有 peer.json 路径<input name="config_path" required placeholder="完整路径"></label><button type="submit">导入已有项目</button></form></section>
-<section id="verification" hidden><h2>在群里确认身份</h2><p id="connection" role="status"></p><p class="muted">发送消息后页面会自动继续，无需回来确认。刷新页面可恢复当前接入进度。</p><p>请用自己的企业微信账号，<strong>@ 刚刚分配的机器人</strong>，发送下面这条消息：</p><pre id="code"></pre><button id="copy-code">复制消息</button><button id="confirm-code">立即检查</button><button id="retry-code" class="secondary" hidden>重新连接</button></section>
-<section id="profile" hidden><button id="profile-back" class="back-button secondary" hidden>← 返回项目</button><div class="row"><h2 id="profile-title"></h2><button id="refresh" class="secondary">刷新机器人状态</button></div><p id="profile-repo"></p><details id="profile-diagnostics" hidden><summary>查看本机配置路径</summary><pre id="config-path"></pre><button id="copy-config-path">复制配置路径</button></details><p id="next-step" class="next-step" role="status"></p><ol id="setup-steps" class="setup-steps"></ol><details><summary>连接检查详情</summary><div id="checks"></div></details><div id="progress"></div><div id="binding" hidden><h3>最后一步：在你选定的 Codex 对话启用</h3><p>在 Codex 打开上面的项目，信任项目并加载 MCP（已打开的项目请重新加载 MCP），将下面的指令发到要绑定的对话。Skill 会完成身份检查、对话绑定和轮询启用。完成后本页自动更新实际连接状态。</p><pre id="binding-text"></pre><button id="copy-binding">复制启用指令</button><details><summary>无法识别 Skill 时使用详细指令</summary><pre id="binding-details"></pre><button id="copy-binding-details">复制详细指令</button></details></div><div id="diagnostic-actions" hidden><button id="run-diagnostics" class="secondary">检查整条连接</button><button id="repair-project" class="secondary">修复本机配置</button><div id="diagnostic-result" role="status"></div></div><div id="runner-actions" hidden><button id="start">启动机器人连接</button><button id="stop" class="secondary">停止机器人连接</button><p class="muted">停止连接仅断开群机器人。对话中的轮询自动化需要在 Codex 中单独暂停。</p></div>
-<details id="manage-project"><summary>管理与重置</summary><p>选择要调整的配置，先查看影响，再确认。每次只操作当前 Agent 和 clone。</p><div class="manage-actions"><button id="reset-conversation" class="secondary">重新绑定对话</button><button id="reset-robot" class="secondary">更新机器人凭据</button><button id="reset-project" class="danger">移除本机接入</button></div></details>
-<div id="admin-tools" hidden><details><summary>团队分工、审核与通知设置</summary><h3>团队 Agent 与分工</h3><div id="members"></div><div id="owners"></div><button id="add-own-agent" class="secondary">给自己增加机器人</button><div id="routes"></div><h3>任务基准分支</h3><button type="button" id="load-repository-settings" class="secondary">读取并调整基准分支</button><form id="repository-policy-form" hidden><label>业务基准分支<select id="team-base-branch" required></select></label><p class="muted">保存后所有成员的新任务使用此分支。已创建任务保留原来的分支、起始提交和审核规则。</p><button type="submit">保存团队基准分支</button></form><h3>真人审核与通知</h3><p>按职责设置：阶段结果提交后由谁审核、通知谁。关闭中间审核可直接接力；最终提交仍需真人审核，并由管理员完成任务。关闭审核的职责作为最后阶段时由管理员审核。</p><p id="review-policy-note" class="muted"></p><form id="review-form" hidden><div id="review-rules"></div><button type="submit">保存审核规则</button></form><p class="muted">规则保存后用于新任务。现有任务继续使用创建时的规则。审核通知附带分支、提交、测试和可复制的群命令；企业微信原生 @ 的显示效果需要在实际群中确认。</p></details><h3>批量分配机器人给同事</h3><p>每行分配一个独立机器人。同一个同事可以领取多行，分别绑定独立项目和对话。接入包密码自动生成。</p>
-<form id="batch-form"><div id="assignment-rows"></div><div class="row"><button id="add-assignment" type="button" class="secondary">增加一位成员／机器人</button><button type="submit">生成全部接入包</button></div></form>
-<div id="delivery-panel" hidden><h3 id="delivery-title"></h3><p>接入包与密码请分开传递。下面的接入说明不包含密码或 Secret。</p><pre id="delivery-instructions"></pre><button id="copy-delivery">复制接入说明</button><label id="delivery-password-label">接入包密码<input id="delivery-password" type="password" readonly></label><button id="copy-password" type="button" class="secondary">复制密码</button><p id="delivery-password-note" class="muted" hidden></p><a id="delivery-download" class="secondary">下载这份接入包</a><button id="reissue-invite" type="button" class="secondary" hidden>重新生成接入包与密码</button><form id="reissue-form" hidden><p>旧包和未批准的旧入队申请将失效。保持原机器人和职责；请输入这个机器人的 Secret，自动生成新的密码。</p><label>机器人 Bot ID<input id="reissue-bot-id" readonly></label><label>机器人 Secret<input id="reissue-secret" name="secret" type="password" required autocomplete="off"></label><button type="submit">生成新的接入包与密码</button><button id="reissue-cancel" type="button" class="secondary">取消</button></form><button id="hide-delivery" type="button" class="secondary">收起</button></div>
-<details><summary>单独分配（兼容入口）</summary><form id="issue-form"><div class="row"><label>Agent ID<input name="agent_id" required pattern="[a-zA-Z0-9_-]{1,64}" placeholder="bob"></label><label>职责标签<input name="capabilities" required placeholder="backend"></label></div><div class="row"><label>机器人 Bot ID<input name="bot_id" required autocomplete="off"></label><label>机器人 Secret<input name="secret" type="password" required autocomplete="off"></label></div><label>自定义密码（可选，留空自动生成）<input name="password" type="password" minlength="12" autocomplete="off"></label><label class="checkbox"><input name="prefer" type="checkbox" checked>设为这些职责的首选执行者</label><label class="checkbox"><input name="commands_enabled" type="checkbox" checked>允许所有者通过此机器人发送群命令</label><button type="submit">生成接入包</button></form></details>
-<h3>已分配的机器人</h3><div id="exports"></div><h3>待确认的成员</h3><div id="requests"></div></div>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Codex Collab · 团队接入</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="masthead">
+<a class="brand" href="/" data-view="home" aria-label="Codex Collab 首页">
+<span class="brand-mark" aria-hidden="true">⌘</span>Codex Collab</a>
+<span class="workspace-label">本机连接</span>
+</header>
+<main>
+<div id="notice" role="status" hidden>
+</div>
+<section id="home" class="scene home">
+<div class="scene-art welcome" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16"/>
+</svg>
+</span>
+<span class="art-small" aria-hidden="true">↗</span>
+<span class="art-spark">
+</span>
+</div>
+<div class="intro">
+<h1 tabindex="-1">让协作，简单一点。</h1>
+<p>选一个项目，和你的团队继续工作。</p>
+</div>
+<div id="profiles" class="project-list" aria-label="我的项目">
+</div>
+<div class="home-actions">
+<button data-view="admin" class="button primary">＋ 接入一个项目</button>
+<button data-view="join" class="quiet-button">接受同事的邀请 →</button>
+</div>
+<details class="home-more">
+<summary>其他接入方式</summary>
+<button data-view="existing" class="quiet-button">导入已有配置 →</button>
+<p id="startup-status" class="muted">
+</p>
+<details id="removed-projects" hidden>
+<summary>已移除的接入</summary>
+<p class="muted">恢复前请确保原项目目录未绑定其他身份。</p>
+<div id="removed-profiles">
+</div>
+</details>
+</details>
 </section>
-<section id="reset-view" hidden><h2 id="reset-title"></h2><p id="reset-target"></p><ul id="reset-effects"></ul><p id="reset-thread" class="muted"></p><form id="reset-form"><label id="reset-pause-label" class="checkbox"><input id="reset-paused" name="heartbeat_paused" type="checkbox">我已在原 Codex 对话暂停协作轮询</label><div id="reset-secret-fields" hidden><label>新的机器人 Secret<input id="reset-secret" name="secret" type="password" autocomplete="off"></label><p class="muted">保持原 Bot ID、群和本人身份。更换机器人或成员请移除本机接入后，由管理员提供新的接入包。</p><button id="reset-connect" type="button" class="secondary">验证新凭据</button><div id="reset-verification" hidden><p id="reset-connection"></p><p>用原绑定的企业微信本人账号，在原协作群 @ 当前机器人，发送：</p><pre id="reset-code"></pre><button id="reset-copy-code" type="button" class="secondary">复制验证码</button></div></div><label>输入 Agent 名称确认<input id="reset-confirmation" name="confirmation" required autocomplete="off"></label><div class="row"><button id="reset-submit" type="submit">确认操作</button><button id="reset-cancel" type="button" class="secondary">取消并返回</button></div></form><p class="muted">操作前自动保存本机恢复记录。向导不会删除 Codex 聊天，也无法替你暂停聊天中的自动化。移除接入保留私有身份与历史凭据；需要彻底删除时可按完成页显示的备份路径手动处理。</p></section>
-</main><footer>配置仅保存在本机。任务与签名协议记录在业务仓库的 agent-collab 分支。</footer><script src="/app.js" defer></script></body></html>
+<section id="project" class="scene project-scene" hidden>
+<button id="project-back" class="back-link">← 所有项目</button>
+<div class="scene-art code" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16"/>
+</svg>
+</span>
+</div>
+<div class="intro">
+<h1 id="project-title" tabindex="-1">
+</h1>
+<p>你的机器人和同事，都在这里。</p>
+</div>
+<div id="project-agents" class="agent-list">
+</div>
+<div class="project-actions">
+<button id="project-add-own" class="button primary" hidden>＋ 添加我的机器人</button>
+<button id="project-settings" class="quiet-button" hidden>团队与邀请 →</button>
+</div>
+<details class="project-details">
+<summary>查看项目信息</summary>
+<p id="project-repository" class="repository-path">
+</p>
+<p id="project-sync" class="muted" role="status">
+</p>
+<button id="project-refresh" class="quiet-button">刷新项目信息</button>
+</details>
+</section>
+<section id="admin" class="scene setup-scene" hidden>
+<button id="admin-back" class="back-link">← 返回</button>
+<div id="admin-step-progress" class="step-progress" aria-label="接入进度">
+<span class="filled" aria-current="step">
+</span>
+<span>
+</span>
+<span>
+</span>
+<span>
+</span>
+</div>
+<form id="admin-form" novalidate>
+<div data-wizard-panel="0">
+<div class="scene-art folder" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/>
+</svg>
+</span>
+</div>
+<div class="intro">
+<h1 tabindex="-1">从一个项目开始。</h1>
+<p>确认电脑里的项目，其他信息会自动带入。</p>
+</div>
+<div class="step-content">
+<label>项目来源<select id="admin-repo-mode" name="repo_mode">
+<option value="existing">使用本机已有项目</option>
+<option value="clone">从 Git 地址拉取新项目</option>
+</select>
+</label>
+<label id="admin-existing-repo">项目目录<input name="repo" id="admin-repo" placeholder="Git 仓库根目录的完整路径">
+</label>
+<div id="admin-clone-repo" hidden>
+<label>Git 仓库地址<input name="remote" id="admin-remote" placeholder="HTTPS 或 SSH 地址，不含 Token">
+</label>
+<label>保存到新目录（可选）<input name="destination" id="admin-destination" placeholder="留空按项目与名称生成独立目录">
+</label>
+</div>
+<p id="project-check-status" class="muted" role="status">会自动识别仓库、默认分支和验证命令。</p>
+<details id="project-options">
+<summary>分支与验证方式</summary>
+<button id="check-project" type="button" class="secondary">重新检查项目</button>
+<p id="project-recommendation" class="muted">使用本机已有的 Git 登录，自动识别远程仓库和默认分支；无法确定时只需选择一次。</p>
+<div id="repository-options" hidden>
+<label>协作远程<select name="remote_name" id="admin-remote-name">
+<option value="">自动识别</option>
+</select>
+</label>
+<label>业务基准分支<select name="base_branch" id="admin-base-branch">
+<option value="">使用远程默认分支</option>
+</select>
+</label>
+<p class="muted">同事和新增机器人会继承这个基准分支。每个新任务固定起始提交，后续分支更新不会改变已有任务。</p>
+</div>
+<label>验证命令<input id="test-command" name="test_command" required placeholder="例如 npm test、go test ./...、sh test.sh">
+</label>
+<p class="muted">请确认这个命令适合项目。工具使用固定程序和参数执行，不运行管道或拼接命令。</p>
+</details>
+</div>
+</div>
+<div data-wizard-panel="1" hidden>
+<div class="scene-art bot" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<rect x="4" y="7" width="16" height="13" rx="4"/>
+<path d="M12 3v4m-4 6h.01M16 13h.01M9 17h6"/>
+</svg>
+</span>
+</div>
+<div class="intro">
+<h1 tabindex="-1">连上你的企微机器人。</h1>
+<p>填写这两项，就可以继续了。</p>
+</div>
+<div class="step-content">
+<div class="bot-fields">
+<label>你的机器人 Bot ID<input name="bot_id" required autocomplete="off">
+</label>
+<label>机器人 Secret<input name="secret" type="password" required autocomplete="off">
+</label>
+</div>
+<details>
+<summary>机器人信息从哪里获取？</summary>
+<p>在企业微信中创建智能机器人，选择 API 模式，复制 Bot ID 和 Secret，并把机器人加入协作群。</p>
+</details>
+<details>
+<summary>名称与分工</summary>
+<div class="row">
+<label>你的显示名称<input name="display_name" required placeholder="例如 Alice 或张三" maxlength="80">
+</label>
+<label>主要职责<select name="responsibility">
+<option value="fullstack">全栈开发</option>
+<option value="frontend">前端开发</option>
+<option value="backend">后端开发</option>
+<option value="testing">测试</option>
+<option value="docs">文档</option>
+<option value="general">通用开发</option>
+</select>
+</label>
+</div>
+<details>
+<summary>更多设置：团队名称、内部身份与职责</summary>
+<label>团队名称（可选）<input name="team_name" placeholder="留空使用项目名称" maxlength="80">
+</label>
+<label>内部 Agent ID（可选）<input name="agent_id" pattern="[a-zA-Z0-9_\-]{1,64}" placeholder="留空自动生成">
+</label>
+<label>自定义职责标签（可选）<input name="capabilities" placeholder="英文标签，以逗号分隔">
+</label>
+</details>
+</details>
+</div>
+</div>
+<div class="step-actions">
+<button id="admin-continue" type="submit" class="button primary continue-button">继续 →</button>
+<span id="admin-step-count" class="step-count">01 / 04</span>
+</div>
+</form>
+</section>
+<section id="own" class="scene setup-scene" hidden>
+<button id="own-back" class="back-link">← 返回</button>
+<div id="own-step-progress" class="step-progress" aria-label="接入进度">
+<span class="filled" aria-current="step">
+</span>
+<span>
+</span>
+<span>
+</span>
+<span>
+</span>
+</div>
+<form id="own-form" novalidate>
+<div data-wizard-panel="0">
+<div class="scene-art folder" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/>
+</svg>
+</span>
+</div>
+<div class="intro">
+<h1 tabindex="-1">再加一位助手。</h1>
+<p>每个机器人使用独立项目目录和 Codex 对话。</p>
+</div>
+<div class="step-content">
+<label>准备项目<select id="own-repo-mode" name="repo_mode">
+<option value="clone">自动拉取独立项目</option>
+<option value="existing">使用已有的独立 clone</option>
+</select>
+</label>
+<label id="own-clone-repo">新项目目录（可选）<input name="destination" placeholder="留空按项目和 Agent 名称创建">
+</label>
+<label id="own-existing-repo" hidden>另一个 clone 的本机目录<input name="repo" placeholder="同一业务仓库的另一个独立 clone">
+</label>
+<div class="row">
+<label>新的 Agent 名称<input name="agent_id" required pattern="[a-zA-Z0-9_\-]{1,64}" placeholder="bob">
+</label>
+<label>职责标签<input name="capabilities" required placeholder="backend">
+</label>
+</div>
+</div>
+</div>
+<div data-wizard-panel="1" hidden>
+<div class="scene-art bot" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<rect x="4" y="7" width="16" height="13" rx="4"/>
+<path d="M12 3v4m-4 6h.01M16 13h.01M9 17h6"/>
+</svg>
+</span>
+</div>
+<div class="intro">
+<h1 tabindex="-1">连接新的企微机器人。</h1>
+<p>同一个企微账号验证后，会自动完成入队。</p>
+</div>
+<div class="step-content">
+<div class="bot-fields">
+<label>新机器人 Bot ID<input name="bot_id" required autocomplete="off">
+</label>
+<label>新机器人 Secret<input name="secret" type="password" required autocomplete="off">
+</label>
+</div>
+<label class="checkbox">
+<input name="prefer" type="checkbox" checked>该 Agent 为这些职责的首选执行者</label>
+</div>
+</div>
+<div class="step-actions">
+<button id="own-continue" type="submit" class="button primary continue-button">继续 →</button>
+<span id="own-step-count" class="step-count">01 / 04</span>
+</div>
+<button id="own-cancel" type="button" class="quiet-button form-cancel">返回原项目</button>
+</form>
+</section>
+<section id="join" class="scene setup-scene" hidden>
+<button id="join-back" class="back-link">← 返回</button>
+<div id="join-step-progress" class="step-progress" aria-label="接入进度">
+<span class="filled" aria-current="step">
+</span>
+<span>
+</span>
+<span>
+</span>
+<span>
+</span>
+</div>
+<form id="join-form" novalidate>
+<div data-wizard-panel="0">
+<div class="scene-art folder" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/>
+</svg>
+</span>
+</div>
+<div class="intro">
+<h1 tabindex="-1">加入同事的项目。</h1>
+<p>选择同事发来的接入包，填入单独收到的密码。</p>
+</div>
+<div class="step-content">
+<label>接入包文件<input name="file" id="invite-file" type="file" accept=".json" required>
+</label>
+<label>接入包密码<input name="password" id="invite-password" type="password" required autocomplete="off">
+</label>
+<button id="inspect-invite" type="button" class="secondary">重新读取邀请</button>
+</div>
+</div>
+<div data-wizard-panel="1" hidden>
+<div class="scene-art folder" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/>
+</svg>
+</span>
+</div>
+<div class="intro">
+<h1 tabindex="-1">是这个项目，对吗？</h1>
+<p>机器人和分工已带入，只需确认本机目录。</p>
+</div>
+<div class="step-content">
+<div id="invite-info" class="selected-project" hidden>
+<p id="invite-summary">
+</p>
+<p id="invite-remote" class="muted">
+</p>
+</div>
+<label>准备项目<select id="join-repo-mode" name="repo_mode">
+<option value="clone">帮我拉取到新目录</option>
+<option value="existing">使用本机已有项目</option>
+</select>
+</label>
+<label id="join-clone-repo">新项目目录<input name="destination" placeholder="留空使用推荐目录，亦可填写完整路径">
+</label>
+<label id="join-existing-repo" hidden>已有项目目录<input name="repo" placeholder="Git 仓库根目录的完整路径">
+</label>
+</div>
+</div>
+<div class="step-actions">
+<button id="join-continue" type="submit" class="button primary continue-button">继续 →</button>
+<span id="join-step-count" class="step-count">01 / 04</span>
+</div>
+</form>
+</section>
+<section id="existing" class="scene setup-scene" hidden>
+<button class="back-link" data-view="home">← 所有项目</button>
+<div class="scene-art folder" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/>
+</svg>
+</span>
+</div>
+<div class="intro">
+<h1 tabindex="-1">继续已有的协作。</h1>
+</div>
+<p>先停止原 Runner。导入会保留原成员身份、任务和对话绑定，并重新启动机器人。旧团队由管理员先导入。</p>
+<form id="existing-form">
+<label>已有私有 peer.json 路径<input name="config_path" required placeholder="完整路径">
+</label>
+<button type="submit">导入已有项目</button>
+</form>
+</section>
+<section id="verification" class="scene setup-scene" hidden>
+<button class="back-link" data-view="home">← 所有项目</button>
+<div class="step-progress" aria-label="第 3 步，共 4 步">
+<span class="filled">
+</span>
+<span class="filled">
+</span>
+<span class="filled" aria-current="step">
+</span>
+<span>
+</span>
+</div>
+<div class="scene-art bot" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<rect x="4" y="7" width="16" height="13" rx="4"/>
+<path d="M12 3v4m-4 6h.01M16 13h.01M9 17h6"/>
+</svg>
+</span>
+</div>
+<div class="intro">
+<h1 tabindex="-1">在群里，打个招呼。</h1>
+<p>用自己的企业微信账号，@ 刚刚连接的机器人。</p>
+</div>
+<div class="step-content">
+<pre id="code" class="command-preview">
+</pre>
+<p id="connection" class="binding-caption" role="status">
+</p>
+<div class="step-actions">
+<button id="copy-code" class="button primary">复制群验证消息</button>
+<span class="muted">发送后，这里会自动继续。</span>
+</div>
+<details>
+<summary>还没有继续？</summary>
+<p>请确认消息发在目标协作群里，并且 @ 了对应的机器人。</p>
+<button id="confirm-code" class="quiet-button">立即检查</button>
+</details>
+<button id="retry-code" class="quiet-button" hidden>重新连接 →</button>
+</div>
+</section>
+<section id="profile" class="scene setup-scene" hidden>
+<button id="profile-back" class="back-link" hidden>← 返回项目</button>
+<div id="profile-step-progress" class="step-progress" aria-label="第 4 步，共 4 步">
+<span class="filled"></span>
+<span class="filled"></span>
+<span class="filled"></span>
+<span class="filled" aria-current="step"></span>
+</div>
+<div id="profile-art">
+<div class="scene-art code" aria-hidden="true">
+<span class="art-halo">
+</span>
+<span class="art-tile">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16"/>
+</svg>
+</span>
+</div>
+</div>
+<div class="intro">
+<h1 id="profile-heading" tabindex="-1">正在准备你的项目。</h1>
+<p id="profile-title">
+</p>
+</div>
+<p id="profile-repo" class="repository-path profile-repo">
+</p>
+<p id="next-step" class="next-step" role="status">
+</p>
+<div id="progress">
+</div>
+<div id="binding" hidden>
+<div class="binding-illustration" aria-hidden="true">
+<span class="binding-node">企微</span>
+<span class="binding-line">
+<i>
+</i>
+<i>
+</i>
+<i>
+</i>
+</span>
+<span class="binding-node codex-node">⌘</span>
+</div>
+<pre id="binding-text">
+</pre>
+<button id="copy-binding" class="button primary">复制启用指令</button>
+<details>
+<summary>无法识别 Skill 时使用详细指令</summary>
+<p>首次使用请信任项目并加载 MCP；已打开的项目请重新加载 MCP。</p>
+<pre id="binding-details">
+</pre>
+<button id="copy-binding-details">复制详细指令</button>
+</details>
+</div>
+<div class="step-actions">
+<button id="profile-done" class="button primary" hidden>回到项目 →</button>
+<button id="profile-start" class="button primary" hidden>恢复机器人连接 →</button>
+</div>
+<button id="pending-requests" class="quiet-button" hidden>
+</button>
+<details id="connection-details">
+<summary>查看连接详情</summary>
+<ol id="setup-steps" class="setup-steps">
+</ol>
+<details>
+<summary>连接检查详情</summary>
+<div id="checks">
+</div>
+</details>
+<details id="profile-diagnostics" hidden>
+<summary>本机配置路径</summary>
+<pre id="config-path">
+</pre>
+<button id="copy-config-path" class="quiet-button">复制配置路径</button>
+</details>
+<button id="refresh" class="quiet-button">刷新机器人状态</button>
+<div id="diagnostic-actions" hidden>
+<button id="run-diagnostics" class="secondary">检查整条连接</button>
+<button id="repair-project" class="secondary">修复本机配置</button>
+<div id="diagnostic-result" role="status">
+</div>
+</div>
+<div id="runner-actions" hidden>
+<button id="start">启动机器人连接</button>
+<button id="stop" class="secondary">停止机器人连接</button>
+<p class="muted">停止连接仅断开群机器人。对话中的轮询自动化需要在 Codex 中单独暂停。</p>
+</div>
+<details id="manage-project">
+<summary>管理与重置</summary>
+<p>选择要调整的配置，先查看影响，再确认。每次只操作当前 Agent 和 clone。</p>
+<div class="manage-actions">
+<button id="reset-conversation" class="secondary">重新绑定对话</button>
+<button id="reset-robot" class="secondary">更新机器人凭据</button>
+<button id="reset-project" class="danger">移除本机接入</button>
+</div>
+</details>
+</details>
+<details id="admin-tools" hidden>
+<summary>团队与邀请</summary>
+<details>
+<summary>团队分工、审核与通知设置</summary>
+<h3>团队 Agent 与分工</h3>
+<div id="members">
+</div>
+<div id="owners">
+</div>
+<button id="add-own-agent" class="secondary">给自己增加机器人</button>
+<div id="routes">
+</div>
+<h3>任务基准分支</h3>
+<button type="button" id="load-repository-settings" class="secondary">读取并调整基准分支</button>
+<form id="repository-policy-form" hidden>
+<label>业务基准分支<select id="team-base-branch" required>
+</select>
+</label>
+<p class="muted">保存后所有成员的新任务使用此分支。已创建任务保留原来的分支、起始提交和审核规则。</p>
+<button type="submit">保存团队基准分支</button>
+</form>
+<h3>真人审核与通知</h3>
+<p>按职责设置：阶段结果提交后由谁审核、通知谁。关闭中间审核可直接接力；最终提交仍需真人审核，并由管理员完成任务。关闭审核的职责作为最后阶段时由管理员审核。</p>
+<p id="review-policy-note" class="muted">
+</p>
+<form id="review-form" hidden>
+<div id="review-rules">
+</div>
+<button type="submit">保存审核规则</button>
+</form>
+<p class="muted">规则保存后用于新任务。现有任务继续使用创建时的规则。审核通知附带分支、提交、测试和可复制的群命令；企业微信原生 @ 的显示效果需要在实际群中确认。</p>
+</details>
+<h3>批量分配机器人给同事</h3>
+<p>每行分配一个独立机器人。同一个同事可以领取多行，分别绑定独立项目和对话。接入包密码自动生成。</p>
+<form id="batch-form">
+<div id="assignment-rows">
+</div>
+<div class="row">
+<button id="add-assignment" type="button" class="secondary">增加一位成员／机器人</button>
+<button type="submit">生成全部接入包</button>
+</div>
+</form>
+<div id="delivery-panel" hidden>
+<h3 id="delivery-title">
+</h3>
+<p>接入包与密码请分开传递。下面的接入说明不包含密码或 Secret。</p>
+<pre id="delivery-instructions">
+</pre>
+<button id="copy-delivery">复制接入说明</button>
+<label id="delivery-password-label">接入包密码<input id="delivery-password" type="password" readonly>
+</label>
+<button id="copy-password" type="button" class="secondary">复制密码</button>
+<p id="delivery-password-note" class="muted" hidden>
+</p>
+<a id="delivery-download" class="secondary">下载这份接入包</a>
+<button id="reissue-invite" type="button" class="secondary" hidden>重新生成接入包与密码</button>
+<form id="reissue-form" hidden>
+<p>旧包和未批准的旧入队申请将失效。保持原机器人和职责；请输入这个机器人的 Secret，自动生成新的密码。</p>
+<label>机器人 Bot ID<input id="reissue-bot-id" readonly>
+</label>
+<label>机器人 Secret<input id="reissue-secret" name="secret" type="password" required autocomplete="off">
+</label>
+<button type="submit">生成新的接入包与密码</button>
+<button id="reissue-cancel" type="button" class="secondary">取消</button>
+</form>
+<button id="hide-delivery" type="button" class="secondary">收起</button>
+</div>
+<details>
+<summary>单独分配（兼容入口）</summary>
+<form id="issue-form">
+<div class="row">
+<label>Agent ID<input name="agent_id" required pattern="[a-zA-Z0-9_\-]{1,64}" placeholder="bob">
+</label>
+<label>职责标签<input name="capabilities" required placeholder="backend">
+</label>
+</div>
+<div class="row">
+<label>机器人 Bot ID<input name="bot_id" required autocomplete="off">
+</label>
+<label>机器人 Secret<input name="secret" type="password" required autocomplete="off">
+</label>
+</div>
+<label>自定义密码（可选，留空自动生成）<input name="password" type="password" minlength="12" autocomplete="off">
+</label>
+<label class="checkbox">
+<input name="prefer" type="checkbox" checked>设为这些职责的首选执行者</label>
+<label class="checkbox">
+<input name="commands_enabled" type="checkbox" checked>允许所有者通过此机器人发送群命令</label>
+<button type="submit">生成接入包</button>
+</form>
+</details>
+<h3>已分配的机器人</h3>
+<div id="exports">
+</div>
+<h3>待确认的成员</h3>
+<div id="requests">
+</div>
+</details>
+</section>
+<section id="reset-view" class="scene setup-scene" hidden>
+<h2 id="reset-title">
+</h2>
+<p id="reset-target">
+</p>
+<ul id="reset-effects">
+</ul>
+<p id="reset-thread" class="muted">
+</p>
+<form id="reset-form">
+<label id="reset-pause-label" class="checkbox">
+<input id="reset-paused" name="heartbeat_paused" type="checkbox">我已在原 Codex 对话暂停协作轮询</label>
+<div id="reset-secret-fields" hidden>
+<label>新的机器人 Secret<input id="reset-secret" name="secret" type="password" autocomplete="off">
+</label>
+<p class="muted">保持原 Bot ID、群和本人身份。更换机器人或成员请移除本机接入后，由管理员提供新的接入包。</p>
+<button id="reset-connect" type="button" class="secondary">验证新凭据</button>
+<div id="reset-verification" hidden>
+<p id="reset-connection">
+</p>
+<p>用原绑定的企业微信本人账号，在原协作群 @ 当前机器人，发送：</p>
+<pre id="reset-code">
+</pre>
+<button id="reset-copy-code" type="button" class="secondary">复制验证码</button>
+</div>
+</div>
+<label>输入 Agent 名称确认<input id="reset-confirmation" name="confirmation" required autocomplete="off">
+</label>
+<div class="row">
+<button id="reset-submit" type="submit">确认操作</button>
+<button id="reset-cancel" type="button" class="secondary">取消并返回</button>
+</div>
+</form>
+<p class="muted">操作前自动保存本机恢复记录。向导不会删除 Codex 聊天，也无法替你暂停聊天中的自动化。移除接入保留私有身份与历史凭据；需要彻底删除时可按完成页显示的备份路径手动处理。</p>
+</section>
+</main>
+<footer class="demo-footer">
+<span>企业微信 · 本机协作</span>
+<div class="theme-picker" role="group" aria-label="页面配色">
+<button class="theme-choice" data-theme-choice="day" aria-pressed="true">
+<i aria-hidden="true">
+</i>纸白</button>
+<button class="theme-choice" data-theme-choice="studio" aria-pressed="false">
+<i aria-hidden="true">
+</i>雾绿</button>
+<button class="theme-choice" data-theme-choice="night" aria-pressed="false">
+<i aria-hidden="true">
+</i>夜色</button>
+</div>
+</footer>
+<script src="/app.js" defer>
+</script>
+</body>
+</html>

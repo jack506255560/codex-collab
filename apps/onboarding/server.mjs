@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { SetupError } from './errors.mjs';
 import { SetupManager } from './manager.mjs';
-const assets = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'] };
+const assets = { '/favicon.svg': ['favicon.svg', 'image/svg+xml'], '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'] };
 const same = (a, b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 export async function startSetupServer({ manager = new SetupManager(), port = 0 } = {}) {
   const token = randomBytes(32).toString('hex'); const cookieName = `collab_${randomBytes(8).toString('hex')}`; let origin;

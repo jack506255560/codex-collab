@@ -7,6 +7,8 @@ import vm from 'node:vm';
 // exercised in the browser audit. These tests guard recovery and API sequencing.
 class Element {
   constructor(id) { this.id = id; this.hidden = false; this.children = []; this.dataset = {}; this.textContent = ''; this.value = ''; this.tagName = id; this.elements = {}; this.checked = false; }
+  setAttribute(name, value) { this[name] = value; }
+  removeAttribute(name) { delete this[name]; }
   append(...children) { for (const child of children) child.parent = this; this.children.push(...children); }
   prepend(...children) { this.children.unshift(...children); }
   replaceChildren(...children) { this.children = children; }
@@ -421,7 +423,7 @@ test('home opens one project with a unified roster and local management, then re
   const overview = { projects: [project], profiles: [{ id: 'alice-profile' }, { id: 'another-profile' }] };
   const p = await page((path) => path === '/api/overview' ? overview : path.startsWith('/api/project?') ? project
     : path.startsWith('/api/profile?') ? { ...member('ready'), id: 'alice-profile', project_id: project.id } : assert.fail(`unexpected ${path}`));
-  assert.equal(p.element('profiles').children.length, 1); assert.equal(p.element('project-count').textContent, '1 个项目');
+  assert.equal(p.element('profiles').children.length, 1);
   await p.activate(p.element('profiles').children[0].children[1]);
   assert.equal(p.element('project').hidden, false); assert.equal(p.element('home').hidden, true);
   assert.equal(p.element('project-agents').children.length, 3);
@@ -464,4 +466,109 @@ test('delayed project refresh cannot replace a different project selected by the
   const refreshing = p.tick(); await p.settle();
   await p.context.loadProject(second.id); resolve({ ...first, name: 'stale' }); await refreshing;
   assert.equal(p.element('project-title').textContent, second.name);
+});
+
+
+// Supply the two real wizard stages to the shipped handlers. Most older tests
+// intentionally exercise saved profiles directly without onboarding panels.
+function guidedForm(p, name, data, fields = [[], []]) {
+  const form = p.element(`${name}-form`);
+  for (const [key, value] of Object.entries(data)) form.elements[key] = { value };
+  if (name === 'admin') {
+    for (const [key, id] of [['repo', 'admin-repo'], ['remote', 'admin-remote'], ['remote_name', 'admin-remote-name'], ['base_branch', 'admin-base-branch'], ['test_command', 'test-command']]) {
+      form.elements[key] = p.element(id); form.elements[key].value = data[key] || '';
+    }
+    p.element('admin-repo-mode').value = data.repo_mode;
+  }
+  Object.defineProperty(form, 'input', { get: () => Object.fromEntries(Object.entries(form.elements).map(([key, input]) => [key, input.value])) });
+  const panels = fields.map((inputs, index) => {
+    const panel = new Element('div'); panel.hidden = index !== 0;
+    panel.querySelectorAll = (selector) => selector === 'input, select, textarea' ? inputs : [];
+    return panel;
+  });
+  form.querySelectorAll = (selector) => selector === '[data-wizard-panel]' ? panels : [];
+  p.element(`${name}-step-progress`).append(...Array.from({ length: 4 }, () => new Element('span')));
+  return { form, panels, advance: () => vm.runInContext(`advanceGuide('${name}')`, p.context) };
+}
+function requiredField(id, valid = false) {
+  return { id, willValidate: true, valid, closest() { return null; }, checkValidity() { return this.valid; }, reportValidity() { this.reported = true; } };
+}
+
+test('project guide checks the repository on Continue, blocks ambiguous settings and preserves credentials on Back', async () => {
+  let ambiguous = true, prepared = false;
+  const p = await page((path, input) => {
+    if (path === '/api/overview') return { profiles: [] };
+    if (path === '/api/project-check') return { repo: input.repo, remote_name: ambiguous ? '' : 'team', remotes: ['team'], base_branch: ambiguous ? '' : 'develop', branches: ['develop'], tests: [{ command: 'npm test' }], selection_required: ambiguous };
+    if (path === '/api/admin-prepare') { prepared = true; return { id: 'proof', draft_id: 'draft', status: 'authenticated', message: 'code' }; }
+    assert.fail(path);
+  });
+  const repo = requiredField('admin-repo'), guide = guidedForm(p, 'admin', { repo_mode: 'existing', repo: '/fixture/project', secret: 'fixture-secret' }, [[repo], []]);
+  assert.equal(await guide.advance(), false); assert.equal(repo.reported, true); assert.ok(!p.calls.includes('/api/project-check'));
+  repo.valid = true;
+  await assert.rejects(guide.advance(), /请选择协作远程/); assert.equal(guide.panels[0].hidden, false); assert.equal(p.element('project-options').open, true);
+  ambiguous = false;
+  assert.equal(await guide.advance(), false); assert.equal(guide.panels[0].hidden, true); assert.equal(guide.panels[1].hidden, false);
+  assert.equal(p.element('admin-step-count').textContent, '02 / 04'); assert.equal(p.element('test-command').value, 'npm test'); assert.equal(prepared, false);
+  await p.click('admin-back'); assert.equal(guide.panels[0].hidden, false); assert.equal(guide.form.elements.secret.value, 'fixture-secret');
+  assert.equal(await guide.advance(), false); assert.equal(await guide.advance(), true); assert.equal(prepared, false);
+});
+
+test('guide reveals missing verification command instead of proceeding with a hidden invalid field', async () => {
+  const p = await page((path) => path === '/api/overview' ? { profiles: [] } : { repo: '/fixture/project', remote_name: 'team', remotes: ['team'], base_branch: 'main', branches: ['main'], tests: [] });
+  const details = { tagName: 'DETAILS', open: false }, command = requiredField('test-command'); command.parentElement = details;
+  const guide = guidedForm(p, 'admin', { repo_mode: 'existing', repo: '/fixture/project' }, [[command], []]);
+  assert.equal(await guide.advance(), false); assert.equal(guide.panels[0].hidden, false); assert.equal(details.open, true); assert.equal(command.reported, true);
+  assert.equal(p.element('project-options').open, true); assert.equal(p.calls.filter((path) => path === '/api/project-check').length, 1);
+});
+
+test('member guide reads the invite before showing the destination and keeps failed invites on step one', async () => {
+  let bad = true;
+  const p = await page((path) => {
+    if (path === '/api/overview') return { profiles: [] };
+    if (path === '/api/inspect-invite') return bad ? new Error('密码错误') : { agent_id: 'bob', display_name: 'Bob', capabilities: ['backend'], remote: 'fixture-remote', suggested_repo: '/fixture/bob' };
+    assert.fail(path);
+  });
+  const guide = guidedForm(p, 'join', { file: { text: async () => '{}' }, password: 'fixture-password', destination: '' });
+  guide.form.elements.file.files = [guide.form.elements.file.value];
+  await assert.rejects(guide.advance(), /密码错误/); assert.equal(guide.panels[0].hidden, false);
+  bad = false; assert.equal(await guide.advance(), false); assert.equal(guide.panels[1].hidden, false); assert.equal(guide.form.elements.destination.value, '/fixture/bob');
+  assert.match(p.element('invite-summary').textContent, /Bob/); assert.equal(p.element('join-continue').textContent, '接入项目 →');
+  assert.equal(await guide.advance(), true); assert.ok(!p.calls.includes('/api/import'));
+});
+
+test('copying the binding instruction does not finish setup until actual binding and poll progress arrive', async () => {
+  const storage = new Map([['codex-collab-onboarding', JSON.stringify({ profile_id: 'member' })]]);
+  const value = { ...member('ready'), runner: { online: true }, desktop: { binding: null }, poll_recent: false, can_receive_tasks: false, binding_prompt: 'enable Bob' };
+  const p = await page((path) => path === '/api/overview' ? { profiles: [value] } : value, storage);
+  assert.equal(p.element('profile-heading').textContent, '最后，连接你的对话。');
+  await p.click('copy-binding'); assert.match(p.element('copy-binding').textContent, /已复制/); assert.equal(p.element('profile-heading').textContent, '最后，连接你的对话。');
+  value.desktop.binding = { thread_id: 'fixture-thread' }; await p.tick();
+  assert.equal(p.element('profile-heading').textContent, '对话已绑定。'); assert.equal(p.element('binding').hidden, true); assert.match(p.element('next-step').textContent, /等待实际轮询/);
+  value.poll_recent = true; value.can_receive_tasks = true; await p.tick();
+  assert.equal(p.element('profile-heading').textContent, '就这么简单。'); assert.equal(p.element('profile-art').dataset.state, 'success'); assert.equal(p.element('profile-step-progress').hidden, true);
+  assert.equal(storage.get('codex-collab-onboarding'), JSON.stringify({ profile_id: 'member' }));
+});
+
+
+test('opening another robot collapses team settings while refreshing the same robot preserves them', async () => {
+  const p = await page((path) => {
+    if (path === '/api/overview') return { profiles: [member('ready')] };
+    if (path.startsWith('/api/profile?')) return member('ready');
+    assert.fail(path);
+  });
+  p.element('admin-tools').open = true; p.element('connection-details').open = true;
+  await vm.runInContext("loadProfile('member')", p.context);
+  assert.equal(p.element('admin-tools').open, false); assert.equal(p.element('connection-details').open, false);
+  p.element('admin-tools').open = true; p.element('connection-details').open = true;
+  await vm.runInContext("loadProfile('member')", p.context);
+  assert.equal(p.element('admin-tools').open, true); assert.equal(p.element('connection-details').open, true);
+});
+
+
+test('an unavailable profile cannot keep showing the previously selected robot as complete', async () => {
+  const p = await page((path) => path === '/api/overview' ? { profiles: [] } : new Error('暂时无法读取'));
+  p.element('profile-heading').textContent = '就这么简单。'; p.element('profile-art').dataset.state = 'success';
+  await assert.rejects(vm.runInContext("loadProfile('unavailable')", p.context), /暂时无法读取/);
+  assert.equal(p.element('profile-heading').textContent, '正在读取连接…'); assert.equal(p.element('profile-art').dataset.state, 'waiting');
+  assert.equal(p.element('binding').hidden, true); assert.equal(p.element('profile-done').hidden, true); assert.equal(p.element('admin-tools').hidden, true);
 });

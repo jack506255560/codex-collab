@@ -6,14 +6,78 @@ const storageKey = 'codex-collab-onboarding';
 function remember(value) { try { if (value) sessionStorage.setItem(storageKey, JSON.stringify(value)); else sessionStorage.removeItem(storageKey); } catch {} }
 function remembered() { try { return JSON.parse(sessionStorage.getItem(storageKey) || 'null'); } catch { return null; } }
 function notice(text) { $('notice').textContent = text; $('notice').hidden = !text; }
-function show(view) { notice(''); const active = ['project', 'profile', 'own', 'reset-view'].includes(view) ? 'home' : view; for (const link of document.querySelectorAll('nav [data-view]')) { if (link.dataset.view === active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); } if (view !== 'profile' || currentView === 'profile') { $('delivery-panel').hidden = true; $('delivery-password').value = ''; $('delivery-instructions').textContent = ''; $('reissue-secret').value = ''; $('reissue-form').hidden = true; deliveryTarget = null; } clearInterval(timer); clearTimeout(timer); viewEpoch++; currentView = view; for (const section of document.querySelectorAll('main>section')) section.hidden = section.id !== view; }
+const guideStep = { admin: 0, join: 0, own: 0 };
+let sceneAnimation;
+function animateScene(node) {
+  sceneAnimation?.cancel();
+  if (!node?.animate || typeof matchMedia !== 'function' || matchMedia('(prefers-reduced-motion: reduce)').matches || document.visibilityState === 'hidden') return;
+  sceneAnimation = node.animate([{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 320, easing: 'cubic-bezier(.2,.75,.2,1)' });
+}
+function guidePanels(name) { return [...$(`${name}-form`).querySelectorAll('[data-wizard-panel]')]; }
+function setGuide(name, step, focus = true) {
+  const panels = guidePanels(name); if (!panels.length) return;
+  guideStep[name] = step;
+  for (const [index, panel] of panels.entries()) panel.hidden = index !== step;
+  const label = step === 0 ? '继续 →' : name === 'join' ? '接入项目 →' : '连接机器人 →';
+  $(`${name}-continue`).textContent = label;
+  $(`${name}-step-count`).textContent = `${String(step + 1).padStart(2, '0')} / 04`;
+  const progress = $(`${name}-step-progress`); progress.setAttribute('aria-label', `第 ${step + 1} 步，共 4 步`);
+  for (const [index, marker] of [...progress.querySelectorAll('span')].entries()) {
+    marker.className = index <= step ? 'filled' : '';
+    if (index === step) marker.setAttribute('aria-current', 'step'); else marker.removeAttribute('aria-current');
+  }
+  if (focus) { globalThis.scrollTo?.({ top: 0, behavior: 'auto' }); animateScene(panels[step]); panels[step].querySelector('h1')?.focus({ preventScroll: true }); }
+}
+function revealField(field) {
+  for (let node = field.parentElement; node; node = node.parentElement) if (node.tagName === 'DETAILS') node.open = true;
+}
+function validatePanel(panel, skipCommand = false) {
+  for (const field of panel.querySelectorAll('input, select, textarea')) {
+    if (!field.willValidate || field.closest('[hidden]') || skipCommand && field.id === 'test-command') continue;
+    if (!field.checkValidity()) { revealField(field); field.reportValidity(); return false; }
+  }
+  return true;
+}
+async function advanceGuide(name) {
+  const panels = guidePanels(name); if (!panels.length) return true;
+  const step = guideStep[name];
+  if (!validatePanel(panels[step], name === 'admin' && step === 0)) return false;
+  if (step === 0) {
+    if (name === 'admin') {
+      const selected = await checkProject(); if (!selected) return false;
+      if (selected.selection_required) throw new Error('请选择协作远程和业务基准分支，再继续。');
+      if (!validatePanel(panels[0])) return false;
+    }
+    if (name === 'join' && !await inspectInvite()) return false;
+    setGuide(name, 1); return false;
+  }
+  return true;
+}
+function show(view) {
+  notice('');
+  if (view !== 'profile' || currentView === 'profile') {
+    $('delivery-panel').hidden = true; $('delivery-password').value = ''; $('delivery-instructions').textContent = '';
+    $('reissue-secret').value = ''; $('reissue-form').hidden = true; deliveryTarget = null;
+  }
+  clearInterval(timer); clearTimeout(timer); viewEpoch++; currentView = view;
+  for (const section of document.querySelectorAll('main>section')) section.hidden = section.id !== view;
+  if (Object.hasOwn(guideStep, view)) setGuide(view, 0, false);
+  globalThis.scrollTo?.({ top: 0, behavior: 'auto' });
+  const section = $(view); animateScene(section); section.querySelector('h1, h2')?.focus?.({ preventScroll: true });
+}
 async function api(path, body) {
   const response = await fetch(`/api/${path}`, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
   const value = await response.json(); if (!response.ok) throw new Error(value.error); return value;
 }
 async function action(fn) {
-  if (busy) return; busy = true; notice(''); for (const button of document.querySelectorAll('button')) button.disabled = true;
-  try { await fn(); } catch (error) { notice(error.message); } finally { busy = false; for (const button of document.querySelectorAll('button')) button.disabled = false; }
+  if (busy) return; busy = true; notice('');
+  const buttons = new Map([...document.querySelectorAll('button')].map((button) => [button, button.disabled]));
+  for (const button of buttons.keys()) button.disabled = true;
+  document.body?.setAttribute('aria-busy', 'true');
+  try { await fn(); } catch (error) { notice(error.message); $('notice').scrollIntoView?.({ block: 'nearest', behavior: 'auto' }); } finally {
+    busy = false; for (const [button, disabled] of buttons) button.disabled = disabled;
+    document.body?.removeAttribute('aria-busy');
+  }
 }
 const values = (form) => Object.fromEntries(new FormData(form));
 function text(tag, value) { const node = document.createElement(tag); node.textContent = value; return node; }
@@ -22,7 +86,7 @@ async function overview() {
   const value = await api('overview');
   if (value.defaults) {
     if (!$('admin-form').elements.repo.value) $('admin-form').elements.repo.value = value.defaults.repo || '';
-    if (!$('admin-form').elements.display_name.value) $('admin-form').elements.display_name.value = value.defaults.display_name || '';
+    if (!$('admin-form').elements.display_name.value) $('admin-form').elements.display_name.value = value.defaults.display_name || '我的开发助手';
   }
   $('startup-status').textContent = value.startup?.enabled ? '后台服务已运行，登录时自动恢复已开启的连接。可关闭终端和浏览器。' : value.startup?.error || '后台工作台会保持连接；登录自启状态可用 codex-collab autostart status 查看。';
   $('profiles').replaceChildren(); $('removed-profiles').replaceChildren();
@@ -36,15 +100,15 @@ async function overview() {
     const card = document.createElement('div'); card.className = 'card';
     card.append(text('span', `${draft.display_name || draft.agent_id} · 待完成群验证`), button('继续创建团队', () => openDraft(draft.id))); $('profiles').append(card);
   }
-  $('project-count').textContent = value.projects ? `${value.projects.length} 个项目` : '';
   for (const [index, project] of (value.projects || []).entries()) {
     const card = document.createElement('div'); card.className = 'card project-card'; card.style?.setProperty('--order', Math.min(index, 7));
     const info = document.createElement('div'); info.className = 'project-card-info';
-    const icon = text('span', project.name.slice(0, 1).toUpperCase()); icon.className = 'project-icon'; icon.setAttribute?.('aria-hidden', 'true');
-    info.append(icon, text('h3', project.name), text('p', project.repository || '本机接入'), text('span', `本机已接入 ${project.local_agent_count} 个机器人`));
-    card.append(info, button('打开项目 ↗', () => loadProject(project.id))); $('profiles').append(card);
+    const icon = text('span', '⌘'); icon.className = 'project-icon'; icon.setAttribute?.('aria-hidden', 'true');
+    info.append(icon, text('h3', project.name), text('p', '和团队里的 Codex 一起工作'));
+    const open = button('→', () => loadProject(project.id)); open.setAttribute?.('aria-label', `打开项目 ${project.name}`);
+    card.append(info, open); $('profiles').append(card);
   }
-  if (!value.profiles.length && !(value.drafts || []).length) $('profiles').append(text('p', '还没有接入项目。选择“连接我的机器人”，或导入同事提供的接入包。'));
+  if (!value.profiles.length && !(value.drafts || []).length) $('profiles').append(text('p', '还没有接入项目。从下面开始，或接受同事的邀请。'));
   for (const profile of value.projects ? [] : value.profiles) {
     const card = document.createElement('div'); card.className = 'card'; const info = document.createElement('div');
     info.append(text('strong', `${profile.display_name || profile.agent_id} · ${profile.role === 'admin' ? '管理员' : '成员'}`), text('p', profile.repo));
@@ -69,25 +133,23 @@ function renderProject(value) {
   const signature = JSON.stringify(value);
   if (signature === projectSignature) return;
   projectSignature = signature;
-  $('project-summary').replaceChildren();
-  for (const [number, label] of [[value.agents.length, '项目机器人'], [value.agents.filter((agent) => agent.mine).length, '属于我'], [value.base_branch || '待确认', '任务基准分支']]) {
-    const stat = document.createElement('div'); stat.className = 'summary-item'; stat.append(text('strong', String(number)), text('span', label)); $('project-summary').append(stat);
-  }
   $('project-agents').replaceChildren();
   for (const [index, agent] of value.agents.entries()) {
     const card = document.createElement('article'); card.className = `robot-card${agent.mine ? ' is-mine' : ''}`; card.style?.setProperty('--order', Math.min(index, 7));
     const heading = document.createElement('div'); heading.className = 'robot-title';
     const connection = agent.connections[0];
     const display = connection?.display_name;
-    heading.append(text('h4', display && display !== agent.agent_id ? `${display}（${agent.agent_id}）` : agent.agent_id));
+    heading.append(text('h4', display || agent.agent_id));
     if (agent.mine) { const mine = text('span', '我的'); mine.className = 'badge mine-badge'; heading.append(mine); }
     card.append(heading, text('p', `${agent.role === 'admin' ? '管理员' : '成员'}${agent.capabilities.length ? ' · ' + agent.capabilities.join(' / ') : ''}`));
     if (agent.identity_conflict) { const warning = text('p', '本机身份与团队记录不一致，请检查原接入。'); warning.className = 'warning-text'; card.append(warning); }
     for (const local of agent.connections) {
       const details = document.createElement('div'); details.className = 'robot-connection';
       const status = text('span', connectionStatus(local)); status.className = `badge${local.can_receive_tasks ? ' ready-badge' : ' pending'}`;
-      const path = text('p', local.repo); path.className = 'repository-path';
-      details.append(status, path, button(local.phase === 'ready' ? '管理机器人' : '继续接入', () => loadProfile(local.id))); card.append(details);
+      const open = button(local.phase === 'ready' && local.bound ? '查看 →' : '完成连接 →', () => loadProfile(local.id));
+      open.className = 'quiet-button'; details.append(status, open);
+      if (agent.connections.length > 1) { const path = text('p', local.repo); path.className = 'repository-path'; card.append(path); }
+      card.append(details);
     }
     if (!agent.connections.length) { const note = text('p', agent.mine ? '我的机器人 · 未在本机接入' : '由同事维护'); note.className = 'muted'; card.append(note); }
     $('project-agents').append(card);
@@ -111,7 +173,7 @@ async function loadProject(id) {
   currentProjectId = id; projectSignature = null; currentProject = null;
   remember({ project_id: id }); show('project'); const epoch = viewEpoch;
   $('project-title').textContent = '正在打开项目'; $('project-repository').textContent = '';
-  $('project-summary').replaceChildren(); $('project-agents').replaceChildren();
+  $('project-agents').replaceChildren();
   $('project-add-own').hidden = true; $('project-settings').hidden = true; $('project-sync').textContent = '';
   try {
     const value = await api(`project?id=${encodeURIComponent(id)}&local=1`);
@@ -121,7 +183,7 @@ async function loadProject(id) {
 }
 $('project-back').onclick = () => action(async () => { remember(null); show('home'); await overview(); });
 $('project-refresh').onclick = () => action(() => refreshProjectView(currentProjectId, viewEpoch));
-$('project-settings').onclick = () => action(() => loadProfile(currentProject.admin_profile_id));
+$('project-settings').onclick = () => action(async () => { await loadProfile(currentProject.admin_profile_id); $('admin-tools').open = true; });
 $('project-add-own').onclick = () => action(async () => { ownAdminId = currentProject.admin_profile_id; ownReturnProject = currentProjectId; show('own'); });
 $('profile-back').onclick = () => action(() => loadProject(currentProjectId));
 async function openDraft(id) {
@@ -130,7 +192,7 @@ async function openDraft(id) {
   pending = { type: 'admin', draft_id: id }; remember({ draft_id: id }); await verifyView(value);
 }
 async function verifyView(session) {
-  discovery = session; show('verification'); $('code').textContent = session.message; updateConnection(session);
+  discovery = session; show('verification'); $('copy-code').textContent = '复制群验证消息'; $('code').textContent = session.message; updateConnection(session);
   const epoch = viewEpoch;
   const tick = async () => {
     if (epoch !== viewEpoch) return;
@@ -176,7 +238,7 @@ function renderSteps(value) {
   $('setup-steps').replaceChildren(); let active = false;
   for (const [label, done] of steps) { const row = text('li', `${done ? '✓ ' : ''}${label}`); row.className = done ? 'done' : !active ? 'active' : ''; if (!done) active = true; $('setup-steps').append(row); }
   const stopped = value.phase === 'ready' && !value.runner?.online;
-  $('next-step').textContent = value.error ? '接入暂时停在这里。处理下方问题后点击“继续接入”。' : value.can_receive_tasks ? '已观察到实际轮询，可以在协作群 @ 机器人发送任务。请保持当前对话的协作自动化启用。' : value.phase === 'waiting' ? '申请已提交，正在自动等待管理员确认。管理员工作台会自动显示申请。' : value.phase !== 'ready' ? '按当前提示继续，完成后向导会自动进入下一步。' : stopped ? '机器人连接已停止。需要接任务时点击“启动机器人连接”。' : !value.desktop?.binding ? '在 Codex 打开下方项目，加载项目 MCP 和 Skill，再把启用指令发到要绑定的对话。' : '对话已绑定，正在等待实际轮询记录。';
+  $('next-step').textContent = value.error ? '接入暂时停在这里。处理下方问题后点击“继续接入”。' : value.can_receive_tasks ? '已观察到实际轮询，可以在协作群 @ 机器人发送任务。请保持当前对话的协作自动化启用。' : value.phase === 'waiting' ? '申请已提交，正在自动等待管理员确认。管理员工作台会自动显示申请。' : value.phase !== 'ready' ? '按当前提示继续，完成后向导会自动进入下一步。' : stopped ? '机器人连接已停止。需要接任务时点击“启动机器人连接”。' : !value.desktop?.binding ? '在 Codex 打开此项目，加载项目 MCP 和 Skill，再把启用指令发到要绑定的对话。' : '对话已绑定，正在等待实际轮询记录。';
 }
 function watchProfile(id, epoch) {
   let failures = 0;
@@ -197,7 +259,14 @@ function watchProfile(id, epoch) {
 }
 async function loadProfile(id) {
   repositoryPolicy = null; $('repository-policy-form').hidden = true;
-  currentId = id; remember({ profile_id: id }); show('profile'); const epoch = viewEpoch; let value;
+  if (currentView !== 'profile' || currentId !== id) {
+    $('admin-tools').open = false; $('connection-details').open = false;
+    $('profile-heading').textContent = '正在读取连接…'; $('profile-art').dataset.state = 'waiting';
+    for (const key of ['binding', 'profile-done', 'profile-start', 'admin-tools', 'pending-requests', 'profile-back']) $(key).hidden = true;
+    for (const key of ['profile-title', 'profile-repo', 'next-step', 'config-path']) $(key).textContent = '';
+    for (const key of ['checks', 'progress', 'setup-steps']) $(key).replaceChildren();
+  }
+  currentId = id; remember({ profile_id: id }); show('profile'); $('copy-binding').textContent = '复制启用指令'; const epoch = viewEpoch; let value;
   try { value = await api(`profile?id=${id}`); } catch (error) { value = await api(`profile?id=${id}&local=1`); notice(`团队同步暂未成功，本机状态仍可查看。${error.message}`); }
   if (epoch !== viewEpoch) return;
   if (value.phase === 'removed') { show('home'); await overview(); return; }
@@ -207,10 +276,21 @@ async function loadProfile(id) {
 }
 function renderProfile(value, automatic = false) {
   const id = value.id; renderSteps(value);
+  const ready = value.phase === 'ready', bound = !!value.desktop?.binding, complete = !!value.can_receive_tasks;
+  $('profile-heading').textContent = complete ? '就这么简单。' : ready && !value.runner?.online ? '连接已暂停。' : ready && !bound ? '最后，连接你的对话。' : ready ? '对话已绑定。' : '正在准备你的项目。';
+  const state = complete ? 'success' : 'waiting';
+  if ($('profile-art').dataset.state !== state) $('profile-art').dataset.state = state;
+  $('profile-step-progress').hidden = complete;
+  $('profile-done').hidden = !ready || !bound;
+  $('profile-start').hidden = !ready || !!value.runner?.online;
+  const requests = value.requests || [];
+  $('pending-requests').hidden = !requests.length;
+  $('pending-requests').textContent = requests.length ? `${requests.length} 位同事等待你的确认 →` : '';
+
   $('reset-conversation').hidden = value.phase !== 'ready'; $('reset-robot').hidden = value.phase !== 'ready';
   $('profile-title').textContent = `${value.display_name && value.display_name !== value.agent_id ? `${value.display_name}（${value.agent_id}）` : value.agent_id} · ${value.role === 'admin' ? '管理员' : '成员'}`; $('profile-repo').textContent = `${value.repo}${value.base_branch ? ` · 基准：${value.remote_name || '远程'}/${value.base_branch}` : ''}`;
   $('profile-diagnostics').hidden = !value.config_path; $('config-path').textContent = value.config_path || '';
-  $('checks').replaceChildren(); $('progress').replaceChildren(); $('binding').hidden = value.phase !== 'ready'; $('runner-actions').hidden = value.phase !== 'ready'; $('diagnostic-actions').hidden = value.phase !== 'ready'; $('admin-tools').hidden = value.role !== 'admin' || value.phase !== 'ready';
+  $('checks').replaceChildren(); $('progress').replaceChildren(); $('binding').hidden = !ready || bound; $('runner-actions').hidden = value.phase !== 'ready'; $('diagnostic-actions').hidden = value.phase !== 'ready'; $('admin-tools').hidden = value.role !== 'admin' || value.phase !== 'ready';
   if (value.phase === 'ready') {
     $('binding-text').textContent = value.binding_prompt; $('binding-details').textContent = value.detailed_binding_prompt || value.binding_prompt;
     for (const [label, ok, wait] of [['项目 MCP', value.project_setup?.mcp_configured, '待配置'], ['项目 Skill', value.project_setup?.skill_installed, '待配置'], ['企业微信机器人', value.runner?.wecom === 'authenticated', value.runner?.online ? '连接中' : '已停止'], ['目标 Codex 对话', !!value.desktop?.binding, '待绑定'], ['对话实际轮询', value.poll_recent, value.poll_observed ? '最近未观察到轮询' : '待观察'], ['可接收任务', value.can_receive_tasks, '尚未满足条件']]) {
@@ -288,11 +368,14 @@ for (const link of document.querySelectorAll('[data-view]')) link.onclick = (eve
     if (resetPlan) { await api('reset-cancel', { id: resetPlan.id, preview_token: resetPlan.preview_token }); resetPlan = null; resetDiscovery = null; $('reset-secret').value = ''; }
     remember(null); show(link.dataset.view);
     if (link.dataset.view === 'home') await overview();
-    if (link.dataset.view === 'admin' && $('admin-form').elements.repo.value) await checkProject();
   });
 };
 function repoMode(prefix) {
-  const clone = $(`${prefix}-repo-mode`).value === 'clone'; $(`${prefix}-existing-repo`).hidden = clone; $(`${prefix}-clone-repo`).hidden = !clone;
+  const clone = $(`${prefix}-repo-mode`).value === 'clone';
+  $(`${prefix}-existing-repo`).hidden = clone; $(`${prefix}-clone-repo`).hidden = !clone;
+  const fields = $(`${prefix}-form`).elements;
+  if (fields.repo) fields.repo.required = !clone;
+  if (prefix === 'admin' && fields.remote) fields.remote.required = clone;
 }
 for (const prefix of ['admin', 'join', 'own']) $(`${prefix}-repo-mode`).onchange = () => {
   repoMode(prefix);
@@ -300,7 +383,7 @@ for (const prefix of ['admin', 'join', 'own']) $(`${prefix}-repo-mode`).onchange
 };
 function clearProjectSelection() {
   $('admin-remote-name').value = ''; $('admin-base-branch').value = ''; $('repository-options').hidden = true;
-  $('project-recommendation').textContent = '';
+  $('project-recommendation').textContent = ''; $('project-check-status').textContent = '会自动识别仓库、默认分支和验证命令。';
 }
 async function checkProject() {
   const snapshot = values($('admin-form'));
@@ -320,6 +403,9 @@ async function checkProject() {
   }
   $('project-recommendation').textContent = selected.selection_required ? '请在下方选择协作远程或业务基准分支，再继续。' : `项目已检查：${selected.repo}。基准：${selected.remote_name}/${selected.base_branch}。${selected.tests.length ? '推荐：' + selected.tests.map((test) => test.command).join(' / ') + '，请确认或修改。' : '未找到常见测试入口，请填写适合项目的验证命令。'}`;
   if (!$('test-command').value && selected.tests.length) $('test-command').value = selected.tests[0].command;
+  $('project-check-status').textContent = selected.selection_required ? '需要你确认一下分支设置。' : `已识别 ${selected.remote_name}/${selected.base_branch}${$('test-command').value ? ` · 验证：${$('test-command').value}` : ''}`;
+  if (selected.selection_required || !$('test-command').value) $('project-options').open = true;
+  return selected;
 }
 $('load-repository-settings').onclick = () => action(async () => {
   const id = currentId, value = await api('repository-settings', { id });
@@ -336,13 +422,12 @@ $('repository-policy-form').onsubmit = (event) => { event.preventDefault(); acti
 }); };
 $('check-project').onclick = () => action(checkProject);
 for (const id of ['admin-repo', 'admin-remote', 'admin-destination']) $(id).onchange = () => {
-  const form = $('admin-form');
   clearProjectSelection();
-  if ($('admin-repo-mode').value === 'clone' ? form.elements.remote.value && form.elements.destination.value : form.elements.repo.value) action(checkProject);
 };
 $('admin-remote-name').onchange = () => { $('admin-base-branch').value = ''; action(checkProject); };
 $('admin-base-branch').onchange = () => action(checkProject);
 $('admin-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
+  if (!await advanceGuide('admin')) return;
   const input = values(event.target);
   const session = await api('admin-prepare', input); event.target.elements.secret.value = '';
   pending = { type: 'admin', draft_id: session.draft_id }; remember({ draft_id: session.draft_id }); await verifyView(session);
@@ -357,13 +442,15 @@ async function inspectInvite() {
   $('invite-info').hidden = false; $('invite-summary').textContent = `${value.display_name || value.agent_id}（${value.agent_id}）· 职责：${value.capabilities.join('、')}${value.team_name ? ' · ' + value.team_name : ''}`;
   $('invite-remote').textContent = `${value.remote}${value.base_branch ? ` · 基准分支：${value.base_branch}（自动继承）` : ''}`;
   if (!$('join-form').elements.destination.value) $('join-form').elements.destination.value = value.suggested_repo;
+  return value;
 }
 $('inspect-invite').onclick = () => action(inspectInvite);
 for (const id of ['invite-file', 'invite-password']) $(id).onchange = () => {
   $('invite-info').hidden = true;
-  if ($('invite-file').files?.length && $('invite-password').value) action(inspectInvite);
+  $('invite-summary').textContent = ''; $('invite-remote').textContent = '';
 };
 $('join-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
+  if (!await advanceGuide('join')) return;
   const profile = await api('import', await invitationInput(event.target)); event.target.elements.password.value = ''; await connectMember(profile);
 }); };
 async function connectMember(profile) {
@@ -376,6 +463,7 @@ async function connectMember(profile) {
 $('add-own-agent').onclick = () => action(async () => { ownAdminId = currentId; ownReturnProject = null; show('own'); });
 $('own-cancel').onclick = () => action(() => ownReturnProject ? loadProject(ownReturnProject) : loadProfile(ownAdminId));
 $('own-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
+  if (!await advanceGuide('own')) return;
   const input = values(event.target); input.id = ownAdminId; input.prefer = event.target.elements.prefer.checked;
   let profile;
   try { profile = await api('own-agent', input); }
@@ -402,9 +490,9 @@ $('refresh').onclick = () => action(() => loadProfile(currentId));
 $('start').onclick = () => action(async () => { await api('runner', { id: currentId, command: 'start' }); await loadProfile(currentId); });
 $('stop').onclick = () => action(async () => { await api('runner', { id: currentId, command: 'stop' }); await loadProfile(currentId); });
 $('copy-config-path').onclick = () => action(() => navigator.clipboard.writeText($('config-path').textContent));
-$('copy-code').onclick = () => action(() => navigator.clipboard.writeText($('code').textContent));
+$('copy-code').onclick = () => copyFeedback('copy-code', '已复制，去群里发送');
 $('copy-binding-details').onclick = () => action(() => navigator.clipboard.writeText($('binding-details').textContent));
-$('copy-binding').onclick = () => action(() => navigator.clipboard.writeText($('binding-text').textContent));
+$('copy-binding').onclick = () => copyFeedback('copy-binding', '已复制，发到 Codex 对话');
 async function openReset(id, kind) {
   clearInterval(timer); clearTimeout(timer); viewEpoch++; resetPlan = null; resetDiscovery = null;
   const plan = await api('reset-preview', { id, kind }); resetPlan = plan; currentId = id;
@@ -497,6 +585,39 @@ $('reissue-form').onsubmit = (event) => { event.preventDefault(); action(async (
   notice('新接入包与密码已生成，旧包已失效。请下载新文件，在“加入团队”中使用新密码。');
 }); };
 $('hide-delivery').onclick = () => action(async () => { $('delivery-panel').hidden = true; $('delivery-password').value = ''; $('reissue-secret').value = ''; $('reissue-form').hidden = true; deliveryTarget = null; watchProfile(currentId, viewEpoch); });
+async function copyFeedback(id, copiedLabel) {
+  return action(async () => {
+    await navigator.clipboard.writeText($(id === 'copy-code' ? 'code' : 'binding-text').textContent);
+    $(id).textContent = copiedLabel;
+    animateScene($(id));
+  });
+}
+for (const name of Object.keys(guideStep)) {
+  $(`${name}-back`).onclick = () => {
+    if (busy) return;
+    if (guideStep[name] > 0) { notice(''); setGuide(name, guideStep[name] - 1); }
+    else if (name === 'own') return $('own-cancel').onclick();
+    else return action(async () => { show('home'); await overview(); });
+  };
+}
+$('profile-done').onclick = () => action(async () => { if (currentProjectId) await loadProject(currentProjectId); else { remember(null); show('home'); await overview(); } });
+$('profile-start').onclick = () => $('start').onclick();
+$('pending-requests').onclick = () => { $('admin-tools').open = true; $('requests').scrollIntoView?.({ block: 'center', behavior: 'auto' }); };
+function initializeAppearance() {
+  if (!document.body) return;
+  function apply(theme) {
+    if (!['day', 'studio', 'night'].includes(theme)) theme = 'day';
+    document.body.dataset.theme = theme;
+    for (const choice of document.querySelectorAll('[data-theme-choice]')) choice.setAttribute('aria-pressed', String(choice.dataset.themeChoice === theme));
+    try { localStorage.setItem('codex-collab-theme', theme); } catch {}
+  }
+  let theme = 'day';
+  try { theme = new URL(location.href).searchParams.get('theme') || localStorage.getItem('codex-collab-theme') || theme; } catch {}
+  apply(theme);
+  for (const choice of document.querySelectorAll('[data-theme-choice]')) choice.onclick = () => apply(choice.dataset.themeChoice);
+  for (const name of Object.keys(guideStep)) repoMode(name);
+}
+initializeAppearance();
 assignmentRow();
 action(async () => {
   const token = location.hash.slice(1); if (token) { await api('session', { token }); history.replaceState(null, '', '/'); }

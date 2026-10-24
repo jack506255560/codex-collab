@@ -1,6 +1,6 @@
 {
   "name": "xuym-codex-collab",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Git-backed collaboration tools for Codex teams, with MCP, WeCom, and local runners.",
   "repository": {
     "type": "git",
@@ -38,6 +38,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "postinstall": "node bin/postinstall.mjs",
     "test": "node --test packages/protocol/test/*.test.mjs packages/git-store/test/*.test.mjs packages/peer/test/*.test.mjs apps/server/test/*.test.mjs apps/peer/test/*.test.mjs apps/onboarding/test/*.test.mjs scripts/peer/test/*.test.mjs tests/e2e/*.test.mjs",
     "server": "node apps/server/main.mjs",
     "runner": "node apps/runner/main.mjs",
