@@ -34,7 +34,7 @@
     "summary": { "type": "string", "maxLength": 4000 },
     "assignee": { "type": "string", "minLength": 1 },
     "chat_id": { "type": "string", "minLength": 1 },
-    "channel": { "enum": ["feishu", "wecom"] },
+    "channel": { "const": "wecom" },
     "run_id": { "type": "string", "minLength": 1 },
     "decision": { "enum": ["approved", "changes_requested"] },
     "refs": {

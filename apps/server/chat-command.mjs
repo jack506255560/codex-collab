@@ -2,8 +2,8 @@ import { BadRequest, Forbidden } from './auth.mjs';
 
 export function parseChatCommand(raw) {
   if (typeof raw !== 'string') return null;
-  // Feishu uses @_user_N tokens; WeCom may include a leading @bot name in text.content.
-  const text = raw.replace(/@_user_\d+/g, '').trim().replace(/^(?:@[^\s@]{1,40}\s+)+(?=协作\s)/, '');
+  // WeCom may include a leading @bot name in text.content.
+  const text = raw.trim().replace(/^(?:@[^\s@]{1,40}\s+)+(?=协作\s)/, '');
   const create = /^协作\s+创建\s+([^|]+?)(?:\s*\|\s*(.+))?$/.exec(text);
   if (create) return { action: 'create', title: create[1].trim(), acceptance: create[2]?.split(';').map((value) => value.trim()).filter(Boolean) || ['人工确认任务验收条件'] };
   const assign = /^协作\s+分配\s+([A-Z][A-Z0-9-]{1,63})\s+([a-zA-Z0-9_-]+)$/.exec(text);
@@ -19,12 +19,18 @@ export function parseChatCommand(raw) {
   return null;
 }
 
-export async function dispatchChatCommand(message, { service, accounts, allowedChatIds, send, lookupUser }) {
+export function wecomTaskChatId(task) {
+  const source = task.spec?.source;
+  const target = source?.chat_id ? source : task.events?.findLast((event) => event.chat_id);
+  return target?.channel === 'wecom' && typeof target.chat_id === 'string' && target.chat_id.trim() ? target.chat_id : null;
+}
+
+export async function dispatchChatCommand(message, { service, accounts, allowedChatIds, send }) {
   const { channel, chatId, senderId, messageId, text } = message;
-  if (!['feishu', 'wecom'].includes(channel) || !allowedChatIds.includes(chatId) || !messageId) return false;
+  if (channel !== 'wecom' || !allowedChatIds.includes(chatId) || !messageId) return false;
   const command = parseChatCommand(text);
   if (!command) return false;
-  const user = lookupUser(senderId);
+  const user = accounts.wecom(senderId);
   if (!user) { await send(chatId, '协作 Bot：当前账号未绑定协作身份。'); return true; }
   const idempotencyKey = `${channel}:${messageId}`;
   let response;
@@ -35,9 +41,7 @@ export async function dispatchChatCommand(message, { service, accounts, allowedC
     } else {
       const current = await service.read(command.id);
       // Group messages must not reveal or mutate a task belonging to another group/channel.
-      const source = current.spec?.source || {};
-      const originating = source.chat_id ? source : current.events?.findLast((event) => event.chat_id);
-      if (!originating?.chat_id || originating.chat_id !== chatId || (originating.channel || 'feishu') !== channel) throw new Forbidden('任务不属于当前群');
+      if (wecomTaskChatId(current) !== chatId) throw new Forbidden('任务不属于当前群');
       if (command.action === 'assign' || command.action === 'handoff_assign') {
         if (command.action === 'handoff_assign' && current.state.status !== 'waiting') throw new BadRequest('任务尚未提交代码交接');
         if (!accounts.users.some((account) => account.id === command.assignee)) throw new BadRequest('未知的协作成员');

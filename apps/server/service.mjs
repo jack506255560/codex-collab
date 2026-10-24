@@ -31,6 +31,15 @@ async function verifyHandoffRef(store, refs) {
   }
 }
 
+function requireWecomChannel(channel) {
+  if (channel !== undefined && channel !== 'wecom') throw new BadRequest('only the wecom chat channel is supported');
+}
+
+function wecomSource(chatId, channel) {
+  requireWecomChannel(channel);
+  return chatId ? { chat_id: chatId, channel: 'wecom' } : {};
+}
+
 export class CollaborationService {
   constructor(store, { repoId, defaultReviewer, users, notify = async () => {}, verifyHandoff = (refs) => verifyHandoffRef(store, refs) }) {
     this.store = store;
@@ -51,7 +60,7 @@ export class CollaborationService {
       schema_version: 1, id: input.id || taskId(), repo: this.repoId,
       title: input.title, description: input.description || '',
       base_branch: 'main', acceptance: input.acceptance,
-      source: { ...(input.chatId ? { chat_id: input.chatId, channel: input.channel || 'feishu' } : {}),
+      source: { ...wecomSource(input.chatId, input.channel),
         ...((input.reviewer || this.defaultReviewer) ? { reviewer: input.reviewer || this.defaultReviewer } : {}) }
     };
     const task = await this.store.create(spec, user.id, idempotencyKey);
@@ -64,12 +73,13 @@ export class CollaborationService {
     if (!assignee || (this.userIds && !this.userIds.has(assignee))) throw new BadRequest('unknown assignee');
     const current = await this.read(id);
     if (current.spec.source?.reviewer === assignee) throw new BadRequest('assignee and reviewer must be different');
-    const task = await this.store.append(id, { type: 'assigned', assignee, ...(chatId ? { chat_id: chatId, channel: channel || 'feishu' } : {}) }, user.id, idempotencyKey, current.state.seq);
+    const task = await this.store.append(id, { type: 'assigned', assignee, ...wecomSource(chatId, channel) }, user.id, idempotencyKey, current.state.seq);
     await this.notify(task, 'assigned');
     return task;
   }
 
   async report(user, id, payload, expectedSeq, idempotencyKey = key()) {
+    requireWecomChannel(payload.channel);
     const task = await this.read(id);
     if (!['progress', 'blocked', 'handoff', 'review_requested', 'reviewed', 'review_note', 'run_failed', 'completed', 'cancelled'].includes(payload.type)) throw new BadRequest('unsupported report event');
     if (payload.type === 'completed' || payload.type === 'cancelled') {

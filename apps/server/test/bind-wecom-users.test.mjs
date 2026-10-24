@@ -13,7 +13,7 @@ test('bind WeCom users to existing token hashes without overwriting original fil
   try {
     const input = join(root, 'original.json');
     const output = join(root, 'wecom.json');
-    const alice = { id: 'alice', role: 'admin', token_sha256: hashToken('alice-token'), feishu_open_id: 'ou-alice' };
+    const alice = { id: 'alice', role: 'admin', token_sha256: hashToken('alice-token') };
     const bob = { id: 'bob', role: 'member', token_sha256: hashToken('bob-token') };
     await writeFile(input, JSON.stringify({ users: [alice, bob] }));
     execFileSync(process.execPath, ['scripts/bind-wecom-users.mjs', input, output, 'alice:wx-alice'], { cwd: repo });

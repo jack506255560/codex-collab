@@ -26,7 +26,6 @@ export async function dispatchWecomMessage(frame, { service, accounts, allowedCh
   if (typeof text !== 'string' || !body.msgid || !body.from?.userid) return false;
   return dispatchChatCommand({ channel: 'wecom', chatId: body.chatid, senderId: body.from.userid,
     messageId: body.msgid, text }, { service, accounts, allowedChatIds,
-    lookupUser: (userid) => accounts.wecom(userid),
     send: (_chatId, response) => reply(frame, response) });
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "xuym-codex-collab",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Git-backed collaboration tools for Codex teams, with MCP, WeCom, and local runners.",
   "repository": {
     "type": "git",
@@ -52,7 +52,6 @@
     "peer": "node scripts/peer/cli.mjs"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "1.74.0",
     "@modelcontextprotocol/node": "2.1.1",
     "@modelcontextprotocol/server": "2.3.1",
     "@openai/codex-sdk": "0.161.0",
