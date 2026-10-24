@@ -4,11 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Codex Collab · 团队接入</title>
+<title>Codex Collab · 企业微信协作向导</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/effects.css">
 </head>
-<body>
+<body data-theme="day">
+<div id="ambient" aria-hidden="true">
+<div class="ambient-light light-one"></div>
+<div class="ambient-light light-two"></div>
+<div class="ambient-light light-three"></div>
+<canvas id="ambient-canvas"></canvas>
+</div>
+<div id="cursor-follower" aria-hidden="true"><i></i></div>
 <header class="masthead">
 <a class="brand" href="/" data-view="home" aria-label="Codex Collab 首页">
 <span class="brand-mark" aria-hidden="true">⌘</span>Codex Collab</a>
@@ -31,8 +39,8 @@
 </span>
 </div>
 <div class="intro">
-<h1 tabindex="-1">让协作，简单一点。</h1>
-<p>选一个项目，和你的团队继续工作。</p>
+<h1 tabindex="-1">让 Codex 组队工作。</h1>
+<p>在企业微信群里，连接你和同事的 Codex 会话，按角色分工、接力完成任务。</p>
 </div>
 <div id="profiles" class="project-list" aria-label="我的项目">
 </div>
@@ -659,9 +667,6 @@
 <button class="theme-choice" data-theme-choice="day" aria-pressed="true">
 <i aria-hidden="true">
 </i>纸白</button>
-<button class="theme-choice" data-theme-choice="studio" aria-pressed="false">
-<i aria-hidden="true">
-</i>雾绿</button>
 <button class="theme-choice" data-theme-choice="night" aria-pressed="false">
 <i aria-hidden="true">
 </i>夜色</button>
@@ -669,5 +674,6 @@
 </footer>
 <script src="/app.js" defer>
 </script>
+<script src="/effects.js" type="module"></script>
 </body>
 </html>

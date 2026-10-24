@@ -1,10 +1,21 @@
 import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { SetupError } from './errors.mjs';
 import { SetupManager } from './manager.mjs';
-const assets = { '/favicon.svg': ['favicon.svg', 'image/svg+xml'], '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'] };
+const threeBuild = new URL('.', pathToFileURL(createRequire(import.meta.url).resolve('three')));
+const assets = {
+  '/': ['index.html', 'text/html; charset=utf-8'],
+  '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
+  '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/effects.js': ['effects.js', 'text/javascript; charset=utf-8'],
+  '/effects.css': ['effects.css', 'text/css; charset=utf-8'],
+  '/vendor/three.module.js': [new URL('three.module.js', threeBuild), 'text/javascript; charset=utf-8'],
+  '/vendor/three.core.js': [new URL('three.core.js', threeBuild), 'text/javascript; charset=utf-8'],
+};
 const same = (a, b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 export async function startSetupServer({ manager = new SetupManager(), port = 0 } = {}) {
   const token = randomBytes(32).toString('hex'); const cookieName = `collab_${randomBytes(8).toString('hex')}`; let origin;
@@ -16,7 +27,9 @@ export async function startSetupServer({ manager = new SetupManager(), port = 0 
       if (req.headers.host !== new URL(origin).host) return json(403, { error: '本机访问地址无效。' });
       const url = new URL(req.url, origin);
       if (req.method === 'GET' && assets[url.pathname]) {
-        const [file, type] = assets[url.pathname]; res.writeHead(200, { 'Content-Type': type }); res.end(await readFile(fileURLToPath(new URL(`./web/${file}`, import.meta.url)))); return;
+        const [file, type] = assets[url.pathname];
+        const content = await readFile(file instanceof URL ? file : new URL(`./web/${file}`, import.meta.url));
+        res.writeHead(200, { 'Content-Type': type }); res.end(content); return;
       }
       if (req.method !== 'GET' && (req.headers.origin !== origin || req.headers['content-type']?.split(';')[0] !== 'application/json')) return json(403, { error: '请通过本机向导操作。' });
       if (req.headers.origin && req.headers.origin !== origin) return json(403, { error: '访问来源无效。' });

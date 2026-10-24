@@ -1,0 +1,47 @@
+/* Three.js star field. Content stays on its own layer with native hit testing. */
+body {
+  isolation: isolate;
+  --fx-blue: 158 181 222;
+  --fx-peach: 237 207 175;
+  --fx-line: 102 142 133;
+  --fx-cursor: 145 133 187;
+}
+body[data-theme="night"] {
+  --fx-blue: 87 111 177;
+  --fx-peach: 141 119 83;
+  --fx-line: 139 186 176;
+  --fx-cursor: 198 186 232;
+}
+#ambient { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: -1; contain: strict; }
+.ambient-light { position: absolute; width: 82vw; height: 88vh; pointer-events: none; will-change: transform; }
+.light-one { left: -31vw; top: -13vh; background: radial-gradient(ellipse, rgb(var(--fx-blue) / .24), transparent 65%); animation: drift-one 24s ease-in-out infinite alternate; }
+.light-two { right: -31vw; top: 1vh; background: radial-gradient(ellipse, rgb(170 153 202 / .19), transparent 68%); animation: drift-two 29s ease-in-out infinite alternate; }
+.light-three { width: 100vw; height: 65vh; left: -6vw; bottom: -33vh; opacity: .28; background: radial-gradient(ellipse, rgb(var(--fx-peach) / .43), transparent 69%); animation: drift-three 31s ease-in-out infinite alternate; }
+body[data-theme="night"] .light-one { opacity: .72; }
+body[data-theme="night"] .light-two { opacity: .8; }
+html:not([data-webgl="ready"]) #ambient::after { content: ""; position: absolute; left: 0; top: 0; width: 2px; height: 2px; border-radius: 50%; color: rgb(var(--fx-line) / .52); box-shadow: 9vw 18vh, 24vw 9vh, 37vw 28vh, 68vw 13vh, 88vw 24vh, 14vw 47vh, 31vw 66vh, 75vw 55vh, 91vw 68vh, 5vw 79vh, 22vw 86vh, 42vw 91vh, 62vw 81vh, 81vw 92vh, 96vw 43vh, 54vw 7vh, 72vw 34vh, 17vw 32vh, 85vw 8vh; }
+#ambient-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+#cursor-follower { position: fixed; top: 0; left: 0; width: 30px; height: 30px; border: 1px solid rgb(var(--fx-cursor) / .35); border-radius: 50%; pointer-events: none; opacity: 0; z-index: 5; will-change: transform; transition: width 180ms, height 180ms, border-color 180ms; }
+#cursor-follower i { display: block; position: absolute; width: 4px; height: 4px; background: rgb(var(--fx-cursor) / .6); border-radius: 50%; right: -2px; top: 12px; }
+.masthead, main, .demo-footer { position: relative; z-index: 1; }
+.effect-note { display: flex; align-items: center; gap: 8px; color: var(--muted); min-width: 0; font-size: 10px; }
+.demo-only { font-size: 8px; opacity: .6; }
+html[data-effects-paused="true"] .ambient-light { animation-play-state: paused; }
+html[data-effects-static="true"] #cursor-follower { visibility: hidden; }
+@keyframes drift-one { from { transform: translate3d(0, 0, 0) rotate(-12deg); } to { transform: translate3d(13vw, 8vh, 0) rotate(14deg); } }
+@keyframes drift-two { from { transform: translate3d(0, 0, 0) rotate(8deg); } to { transform: translate3d(-10vw, 13vh, 0) rotate(-15deg); } }
+@keyframes drift-three { from { transform: translate3d(0, 0, 0) scale(1); } to { transform: translate3d(12vw, -6vh, 0) scale(1.08); } }
+@media (max-width: 600px) {
+  .masthead { gap: 10px; align-items: center; }
+  .effect-note { font-size: 9px; flex-wrap: wrap; justify-content: center; gap: 5px; }
+  .demo-only { flex-basis: 100%; text-align: center; margin: 0; }
+  .ambient-light { width: 125vw; }
+}
+@media (hover: none), (pointer: coarse) {
+  #cursor-follower { display: none; }
+  .ambient-light { animation: none; will-change: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ambient-light { animation: none; will-change: auto; }
+  #cursor-follower { display: none; }
+}

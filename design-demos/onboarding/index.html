@@ -4,24 +4,32 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Codex Collab · 轻引导 Demo</title>
+  <title>Codex Collab · 企业微信协作向导</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/effects.css">
 </head>
 <body data-theme="day">
+  <div id="ambient" aria-hidden="true">
+    <div class="ambient-light light-one"></div>
+    <div class="ambient-light light-two"></div>
+    <div class="ambient-light light-three"></div>
+    <canvas id="ambient-canvas"></canvas>
+  </div>
+  <div id="cursor-follower" aria-hidden="true"><i></i></div>
   <header class="masthead">
     <a class="brand" href="#home" aria-label="Codex Collab 首页"><span class="brand-mark" aria-hidden="true">⌘</span><span>Codex Collab</span></a>
-    <span class="preview-label">交互 Demo</span>
   </header>
   <main id="main"><div id="scene" class="scene"></div></main>
   <footer class="demo-footer">
-    <span>示例数据 · 不会建立真实连接</span>
+    <div class="effect-note"><span class="demo-only">设计预览 · 示例数据</span></div>
     <div class="theme-picker" role="group" aria-label="页面配色">
       <button data-theme-choice="day" aria-pressed="true"><i></i>纸白</button>
-      <button data-theme-choice="studio" aria-pressed="false"><i></i>雾绿</button>
       <button data-theme-choice="night" aria-pressed="false"><i></i>夜色</button>
     </div>
   </footer>
   <div id="toast" role="status" hidden></div>
   <script src="/app.js"></script>
+  <script src="/effects.js" type="module"></script>
 </body>
 </html>

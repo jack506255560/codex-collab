@@ -606,7 +606,7 @@ $('pending-requests').onclick = () => { $('admin-tools').open = true; $('request
 function initializeAppearance() {
   if (!document.body) return;
   function apply(theme) {
-    if (!['day', 'studio', 'night'].includes(theme)) theme = 'day';
+    if (!['day', 'night'].includes(theme)) theme = 'day';
     document.body.dataset.theme = theme;
     for (const choice of document.querySelectorAll('[data-theme-choice]')) choice.setAttribute('aria-pressed', String(choice.dataset.themeChoice === theme));
     try { localStorage.setItem('codex-collab-theme', theme); } catch {}

@@ -1,0 +1,11 @@
+{
+  "name": "codex-collab-onboarding-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  }
+}

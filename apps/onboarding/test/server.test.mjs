@@ -133,3 +133,32 @@ test('wizard illustration icon is bundled locally and served under the same CSP'
     assert.match(await (await fetch(app.origin)).text(), /href="\/favicon.svg"/);
   } finally { await app.close(); }
 });
+
+
+test('star field and its Three.js module graph are served locally under the wizard CSP', async () => {
+  const app = await startSetupServer({ manager: { close() {} } });
+  try {
+    const html = await (await fetch(app.origin)).text();
+    assert.match(html, /href="\/effects.css"/);
+    assert.match(html, /src="\/effects.js" type="module"/);
+    const resources = ['/effects.css', '/effects.js', '/vendor/three.module.js', '/vendor/three.core.js'];
+    const bodies = new Map();
+    for (const path of resources) {
+      const response = await fetch(`${app.origin}${path}`);
+      assert.equal(response.status, 200, path);
+      assert.match(response.headers.get('content-type'), path.endsWith('.css') ? /text\/css/ : /text\/javascript/);
+      assert.match(response.headers.get('content-security-policy'), /script-src 'self'/);
+      assert.doesNotMatch(response.headers.get('content-security-policy'), /unsafe-eval|unsafe-inline|https?:/);
+      bodies.set(path, await response.text());
+    }
+    assert.match(bodies.get('/effects.js'), /from '\/vendor\/three.module.js'/);
+    assert.match(bodies.get('/vendor/three.module.js'), /from ['"]\.\/three.core.js['"]/);
+    assert.match(bodies.get('/vendor/three.core.js'), /class BufferGeometry/);
+    assert.equal((await fetch(`${app.origin}/api/overview`)).status, 401);
+    const badHost = await new Promise((resolve, reject) => {
+      const request = http.get(`${app.origin}/vendor/three.module.js`, { headers: { Host: 'evil.invalid' } }, (response) => { response.resume(); resolve(response.statusCode); });
+      request.on('error', reject);
+    });
+    assert.equal(badHost, 403);
+  } finally { await app.close(); }
+});

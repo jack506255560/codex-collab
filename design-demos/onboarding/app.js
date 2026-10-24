@@ -47,7 +47,7 @@ function hero(title, description, artKind = '') {
   return `${artKind ? art(artKind) : ''}<div class="intro"><h1 tabindex="-1">${title}</h1><p>${description}</p></div>`;
 }
 function home() {
-  return `<section class="home">${hero('让协作，简单一点。', '选一个项目，和你的团队继续工作。', 'welcome')}
+  return `<section class="home">${hero('让 Codex 组队工作。', '在企业微信群里，连接你和同事的 Codex 会话，按角色分工、接力完成任务。', 'welcome')}
     <div class="project-list">${projects.map((project, i) => `<a class="project-entry" style="--order:${i}" href="#project/${project.id}"><span class="project-icon ${project.color}">${icon(project.icon)}</span><span class="project-copy"><strong>${project.name}</strong><span>${project.description}</span></span><span class="entry-arrow">${icon('arrow')}</span></a>`).join('')}</div>
     <div class="home-actions"><button class="button primary" data-action="connect">${icon('plus')}接入一个项目</button><button class="quiet-button" data-action="invite">接受同事的邀请${icon('arrow')}</button></div>
   </section>`;
@@ -114,7 +114,7 @@ function startSetup(mode, step = 0, keepProject = false) {
   location.hash = `${mode}/${step}`;
 }
 function setTheme(value) {
-  const theme = ['day', 'studio', 'night'].includes(value) ? value : 'day';
+  const theme = ['day', 'night'].includes(value) ? value : 'day';
   document.body.dataset.theme = theme;
   document.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.themeChoice === theme)));
   const url = new URL(location.href); url.searchParams.set('theme', theme); history.replaceState(null, '', url);
