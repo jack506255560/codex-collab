@@ -8,8 +8,11 @@ import { SetupManager, savePrivate } from './manager.mjs';
 import { RunnerSupervisor } from './supervisor.mjs';
 import { workspaceHome } from './workspace.mjs';
 import { configureStartup, startupStatus } from './startup.mjs';
-import { alive } from '../peer/process.mjs';
+import { alive, acquireRunnerControl } from '../peer/process.mjs';
 const entry = fileURLToPath(import.meta.url);
+const { version } = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+const runtime = { version, entry, node: process.execPath };
+const sameRuntime = (state) => Object.entries(runtime).every(([key, value]) => state.runtime?.[key] === value);
 function openBrowser(url) {
   const command = process.platform === 'darwin' ? ['open', url] : process.platform === 'win32' ? ['cmd', '/c', 'start', '', url] : ['xdg-open', url];
   const child = spawn(command[0], command.slice(1), { stdio: 'ignore' }); child.on('error', () => {}); child.unref();
@@ -38,7 +41,7 @@ export async function runService({ home = workspaceHome() } = {}) {
   try {
     const manager = new SetupManager({ home });
     app = await startSetupServer({ manager });
-    await lock.writeFile(JSON.stringify({ pid: process.pid, url: app.url, started_at: new Date().toISOString() }) + '\n'); await lock.close();
+    await lock.writeFile(JSON.stringify({ pid: process.pid, url: app.url, started_at: new Date().toISOString(), runtime }) + '\n'); await lock.close();
     const supervisor = new RunnerSupervisor(manager);
     const tick = async () => {
       try { await manager.exclusive(() => supervisor.tick()); } catch { /* Local diagnostics show missing/invalid profiles without logging secrets. */ }
@@ -53,9 +56,49 @@ export async function runService({ home = workspaceHome() } = {}) {
     return { ...app, stop };
   } catch (error) { await lock.close().catch(() => {}); await rm(path, { force: true }); if (app) await app.close(); throw error; }
 }
+async function stopOutdatedService(home, state) {
+  // A private lock can outlive its process. Authenticate the loopback service
+  // before signalling a legacy PID; never terminate an unrelated process.
+  let verified = false;
+  try {
+    const url = new URL(state.url);
+    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.username || url.password || !/^#[a-f0-9]{64}$/.test(url.hash)) throw new Error();
+    const response = await fetch(`${url.origin}/api/session`, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
+      headers: { Origin: url.origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: url.hash.slice(1) }),
+    });
+    verified = response.ok && (await response.json()).ok === true;
+  } catch { /* Keep private service URLs and network errors out of diagnostics. */ }
+  if (!verified) throw new Error('无法确认旧版向导服务的身份，请检查后台服务后重试。');
+  const current = await serviceState(home);
+  if (!current || current.pid !== state.pid || current.url !== state.url) return;
+  try { process.kill(state.pid, 'SIGTERM'); }
+  catch (error) { if (error.code !== 'ESRCH') throw error; }
+  for (let attempt = 0; attempt < 150; attempt++) {
+    if (!alive(state.pid)) return;
+    await delay(100);
+  }
+  throw new Error('旧版向导服务尚未退出，请稍后重新运行 codex-collab setup。');
+}
 export async function runLocalSetup({ open = true, home = workspaceHome(), cwd = process.cwd(), foreground = false, startup = true } = {}) {
-  home = resolve(home); await savePrivate(join(home, 'context.json'), { cwd: resolve(cwd) });
+  home = resolve(home); await mkdir(home, { recursive: true, mode: 0o700 });
+  // Serialize launchers so two setup commands cannot both stop a service that
+  // another launcher has just upgraded. Runner processes keep their own locks.
+  const release = await acquireRunnerControl(join(home, 'launcher'), entry);
+  try {
+    await savePrivate(join(home, 'context.json'), { cwd: resolve(cwd) });
+    return await launchLocalSetup({ open, home, foreground, startup });
+  } finally { await release(); }
+}
+async function launchLocalSetup({ open, home, foreground, startup }) {
   let state = await serviceState(home);
+  if (state && !sameRuntime(state)) {
+    await stopOutdatedService(home, state);
+    state = await serviceState(home);
+    if (state && !sameRuntime(state)) throw new Error('向导服务正在更新，请稍后重新运行 codex-collab setup。');
+    console.log('已更新本机向导服务。');
+  }
   if (foreground) {
     if (state) { console.log(`本机工作台已运行：${state.url}`); if (open) openBrowser(state.url); return; }
     const app = await runService({ home }); if (app) { console.log(`Codex Collab 工作台：${app.url}`); if (open) openBrowser(app.url); } return app;

@@ -96,6 +96,8 @@ test('default launcher exits while a private background workbench stays alive an
     assert.match(first.stdout, /可以关闭终端和浏览器/);
     const state = JSON.parse(await readFile(join(home, 'wizard.json'), 'utf8')); pid = state.pid;
     assert.notEqual(pid, process.pid); process.kill(pid, 0);
+    assert.equal(state.runtime.version, JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8')).version);
+    assert.equal(state.runtime.entry, fileURLToPath(new URL('../main.mjs', import.meta.url)));
     assert.equal((await stat(join(home, 'wizard.json'))).mode & 0o777, 0o600);
     assert.equal((await stat(join(home, 'service.log'))).mode & 0o777, 0o600);
     const url = new URL(state.url); const response = await fetch(`${url.origin}/api/session`, { method: 'POST', headers: { Origin: url.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ token: url.hash.slice(1) }) });
@@ -106,6 +108,56 @@ test('default launcher exits while a private background workbench stays alive an
     const status = await exec(process.execPath, [cli, 'service-status'], { env }); assert.equal(JSON.parse(status.stdout).online, true); assert.doesNotMatch(status.stdout, /#|token|http:/);
   } finally {
     if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} for (let i = 0; i < 50; i++) { try { await stat(join(home, 'wizard.json')); } catch { break; } await delay(100); } }
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('setup replaces legacy and outdated workbenches, serializes concurrent launches and serves the full effect module graph', { timeout: 35000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'collab-service-upgrade-'));
+  const path = join(home, 'wizard.json'); const env = { ...process.env, CODEX_COLLAB_HOME: home }; let pid;
+  const launch = () => exec(process.execPath, [cli, 'setup', '--no-open', '--no-startup'], { env, timeout: 18000 });
+  try {
+    await launch(); let state = JSON.parse(await readFile(path, 'utf8')); pid = state.pid;
+    for (const legacy of [true, false]) {
+      const oldPid = pid;
+      if (legacy) delete state.runtime;
+      else state.runtime.version = '0.0.0';
+      await writeFile(path, JSON.stringify(state), { mode: 0o600 });
+      const launches = await Promise.all([launch(), launch()]);
+      assert.equal(launches.filter(result => /已更新本机向导服务/.test(result.stdout)).length, 1);
+      state = JSON.parse(await readFile(path, 'utf8')); pid = state.pid;
+      assert.notEqual(pid, oldPid);
+      assert.throws(() => process.kill(oldPid, 0), { code: 'ESRCH' });
+      const origin = new URL(state.url).origin;
+      for (const asset of ['/effects.css', '/effects.js', '/vendor/three.module.js', '/vendor/three.core.js']) {
+        const response = await fetch(origin + asset);
+        assert.equal(response.status, 200, asset);
+        assert.match(response.headers.get('content-type'), /text\/(css|javascript)/);
+      }
+      assert.equal((await fetch(origin + '/api/overview')).status, 401);
+      await launch(); assert.equal(JSON.parse(await readFile(path, 'utf8')).pid, pid, 'the upgraded workbench is reused');
+    }
+  } finally {
+    if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} for (let i = 0; i < 50; i++) { try { await stat(path); } catch { break; } await delay(100); } }
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('setup refuses to signal an outdated service when its private session cannot be authenticated', { timeout: 20000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'collab-service-identity-'));
+  const path = join(home, 'wizard.json'); const env = { ...process.env, CODEX_COLLAB_HOME: home }; let pid, original;
+  const launch = () => exec(process.execPath, [cli, 'setup', '--no-open', '--no-startup'], { env, timeout: 12000 });
+  try {
+    await launch(); original = await readFile(path, 'utf8');
+    const state = JSON.parse(original); pid = state.pid; delete state.runtime;
+    const url = new URL(state.url); url.hash = '0'.repeat(64); state.url = url.href;
+    await writeFile(path, JSON.stringify(state), { mode: 0o600 });
+    await assert.rejects(launch(), error => /无法确认旧版向导服务的身份/.test(error.stderr) && !error.stderr.includes(url.hash.slice(1)));
+    process.kill(pid, 0);
+    assert.equal((await fetch(new URL(JSON.parse(original).url).origin)).status, 200);
+  } finally {
+    if (original) await writeFile(path, original, { mode: 0o600 });
+    if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} for (let i = 0; i < 50; i++) { try { await stat(path); } catch { break; } await delay(100); } }
     await rm(home, { recursive: true, force: true });
   }
 });
