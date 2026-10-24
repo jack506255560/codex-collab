@@ -611,7 +611,7 @@ function initializeAppearance() {
     for (const choice of document.querySelectorAll('[data-theme-choice]')) choice.setAttribute('aria-pressed', String(choice.dataset.themeChoice === theme));
     try { localStorage.setItem('codex-collab-theme', theme); } catch {}
   }
-  let theme = 'day';
+  let theme = 'night';
   try { theme = new URL(location.href).searchParams.get('theme') || localStorage.getItem('codex-collab-theme') || theme; } catch {}
   apply(theme);
   for (const choice of document.querySelectorAll('[data-theme-choice]')) choice.onclick = () => apply(choice.dataset.themeChoice);

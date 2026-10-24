@@ -16,19 +16,21 @@ class Element {
   querySelectorAll(selector) { const nodes = this.children.flatMap((child) => [child, ...child.querySelectorAll('*')]); return selector === '*' ? nodes : selector === '[data-field]' ? nodes.filter((child) => child.dataset.field) : nodes.filter((child) => child.tagName === selector); }
   querySelector(selector) { return this.querySelectorAll('*').find((child) => selector === `[data-field="${child.dataset.field}"]`); }
 }
-async function page(route, storage = new Map()) {
+async function page(route, storage = new Map(), { href = 'http://localhost/', appearance = false, themeStorage = new Map() } = {}) {
   const ids = new Map(), calls = [], timers = new Map(); let timerId = 0;
   const element = (id) => { if (!ids.has(id)) ids.set(id, new Element(id)); return ids.get(id); };
   const sections = ['home', 'project', 'admin', 'join', 'own', 'existing', 'verification', 'profile', 'reset-view'].map(element);
+  const themeChoices = ['day', 'night'].map((theme) => { const choice = new Element(`theme-${theme}`); choice.dataset.themeChoice = theme; return choice; });
   const context = vm.createContext({
-    document: { getElementById: element, createElement: (tag) => new Element(tag), querySelectorAll: (selector) => selector === 'main>section' ? sections : [] },
+    document: { body: appearance ? element('body') : undefined, getElementById: element, createElement: (tag) => new Element(tag), querySelectorAll: (selector) => selector === 'main>section' ? sections : selector === '[data-theme-choice]' ? themeChoices : [] },
     FormData: class { constructor(form) { return Object.entries(form.input)[Symbol.iterator](); } },
     fetch: async (path, options) => {
       calls.push(path);
       const value = await route(path, options?.body ? JSON.parse(options.body) : undefined);
       return { ok: !(value instanceof Error), json: async () => value instanceof Error ? { error: value.message } : value };
     },
-    location: { hash: '' }, history: { replaceState() {} }, navigator: { clipboard: { async writeText() {} } },
+    location: { hash: '', href }, URL, localStorage: { getItem: (key) => themeStorage.get(key) ?? null, setItem: (key, value) => themeStorage.set(key, value) },
+    history: { replaceState() {} }, navigator: { clipboard: { async writeText() {} } },
     setInterval: (fn) => { timers.set(++timerId, fn); return timerId; }, clearInterval: (id) => timers.delete(id),
     setTimeout: (fn) => { timers.set(++timerId, fn); return timerId; }, clearTimeout: (id) => timers.delete(id),
     sessionStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
@@ -36,13 +38,34 @@ async function page(route, storage = new Map()) {
   vm.runInContext(await readFile(new URL('../web/app.js', import.meta.url), 'utf8'), context);
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   await settle();
-  return { element, calls, settle, storage, context, tick: async () => { const next = timers.entries().next().value; if (next) { timers.delete(next[0]); await next[1](); await settle(); } }, activate: async (node) => { node.onclick(); await settle(); }, submit: async (id, input) => {
+  return { element, calls, settle, storage, themeStorage, themeChoices, context, tick: async () => { const next = timers.entries().next().value; if (next) { timers.delete(next[0]); await next[1](); await settle(); } }, activate: async (node) => { node.onclick(); await settle(); }, submit: async (id, input) => {
     const target = { input, elements: Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { value, checked: value === true }])) };
     element(id).onsubmit({ preventDefault() {}, target }); await settle(); return target;
   }, click: async (id) => { element(id).onclick(); await settle(); } };
 }
 const member = (phase) => ({ id: 'member', agent_id: 'bob', role: 'member', repo: '/fixture/bob', phase });
 const importInput = () => ({ file: { text: async () => '{}' }, password: 'fixture-password', repo: '/fixture/bob' });
+
+
+test('night is the first-run wizard theme while explicit and saved choices are respected', async () => {
+  const fresh = await page((path) => path === '/api/overview' ? { profiles: [] } : assert.fail(path), new Map(), { appearance: true });
+  assert.equal(fresh.element('body').dataset.theme, 'night');
+  assert.equal(fresh.themeChoices[0]['aria-pressed'], 'false');
+  assert.equal(fresh.themeChoices[1]['aria-pressed'], 'true');
+  assert.equal(fresh.themeStorage.get('codex-collab-theme'), 'night');
+
+  const saved = new Map([['codex-collab-theme', 'day']]);
+  const returning = await page((path) => path === '/api/overview' ? { profiles: [] } : assert.fail(path), new Map(), { appearance: true, themeStorage: saved });
+  assert.equal(returning.element('body').dataset.theme, 'day');
+  assert.equal(returning.themeChoices[0]['aria-pressed'], 'true');
+
+  const urlChoice = await page((path) => path === '/api/overview' ? { profiles: [] } : assert.fail(path), new Map(), { appearance: true, href: 'http://localhost/?theme=night', themeStorage: saved });
+  assert.equal(urlChoice.element('body').dataset.theme, 'night');
+  assert.equal(urlChoice.themeChoices[1]['aria-pressed'], 'true');
+
+  const legacyTheme = await page((path) => path === '/api/overview' ? { profiles: [] } : assert.fail(path), new Map(), { appearance: true, href: 'http://localhost/?theme=studio' });
+  assert.equal(legacyTheme.element('body').dataset.theme, 'day');
+});
 
 test('reimporting waiting and ready members opens existing progress without reconnecting discovery', async () => {
   for (const phase of ['waiting', 'configuring', 'verified', 'ready']) {
