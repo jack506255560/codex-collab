@@ -19,7 +19,7 @@ body[data-theme="night"] {
 .light-three { width: 100vw; height: 65vh; left: -6vw; bottom: -33vh; opacity: .28; background: radial-gradient(ellipse, rgb(var(--fx-peach) / .43), transparent 69%); animation: drift-three 31s ease-in-out infinite alternate; }
 body[data-theme="night"] .light-one { opacity: .72; }
 body[data-theme="night"] .light-two { opacity: .8; }
-html:not([data-webgl="ready"]) #ambient::after { content: ""; position: absolute; left: 0; top: 0; width: 2px; height: 2px; border-radius: 50%; color: rgb(var(--fx-line) / .52); box-shadow: 9vw 18vh, 24vw 9vh, 37vw 28vh, 68vw 13vh, 88vw 24vh, 14vw 47vh, 31vw 66vh, 75vw 55vh, 91vw 68vh, 5vw 79vh, 22vw 86vh, 42vw 91vh, 62vw 81vh, 81vw 92vh, 96vw 43vh, 54vw 7vh, 72vw 34vh, 17vw 32vh, 85vw 8vh; }
+html:not([data-webgl="ready"]) #ambient::after { content: ""; position: absolute; left: 0; top: 0; width: 2px; height: 2px; border-radius: 50%; color: rgb(var(--fx-line) / .64); box-shadow: 9vw 18vh, 24vw 9vh, 37vw 28vh, 68vw 13vh, 88vw 24vh, 14vw 47vh, 31vw 66vh, 75vw 55vh, 91vw 68vh, 5vw 79vh, 22vw 86vh, 42vw 91vh, 62vw 81vh, 81vw 92vh, 96vw 43vh, 54vw 7vh, 72vw 34vh, 17vw 32vh, 85vw 8vh; }
 #ambient-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 #cursor-follower { position: fixed; top: 0; left: 0; width: 30px; height: 30px; border: 1px solid rgb(var(--fx-cursor) / .35); border-radius: 50%; pointer-events: none; opacity: 0; z-index: 5; will-change: transform; transition: width 180ms, height 180ms, border-color 180ms; }
 #cursor-follower i { display: block; position: absolute; width: 4px; height: 4px; background: rgb(var(--fx-cursor) / .6); border-radius: 50%; right: -2px; top: 12px; }

@@ -84,10 +84,17 @@ function text(tag, value) { const node = document.createElement(tag); node.textC
 function button(label, fn) { const node = text('button', label); node.onclick = () => action(fn); return node; }
 async function overview() {
   const value = await api('overview');
+  const hasWork = !!((value.projects || []).length || (value.drafts || []).length || (!value.projects && (value.profiles || []).length));
   if (value.defaults) {
     if (!$('admin-form').elements.repo.value) $('admin-form').elements.repo.value = value.defaults.repo || '';
     if (!$('admin-form').elements.display_name.value) $('admin-form').elements.display_name.value = value.defaults.display_name || '我的开发助手';
   }
+  $('home-start-options').hidden = hasWork;
+  $('home-actions').hidden = !hasWork;
+  $('profiles').hidden = !hasWork;
+  const detectedRepo = value.defaults?.repo?.trim() || '';
+  $('detected-project').hidden = !detectedRepo;
+  $('detected-project-path').textContent = detectedRepo;
   $('startup-status').textContent = value.startup?.enabled ? '后台服务已运行，登录时自动恢复已开启的连接。可关闭终端和浏览器。' : value.startup?.error || '后台工作台会保持连接；登录自启状态可用 codex-collab autostart status 查看。';
   $('profiles').replaceChildren(); $('removed-profiles').replaceChildren();
   $('removed-projects').hidden = !(value.removed_profiles || []).length;
@@ -108,7 +115,6 @@ async function overview() {
     const open = button('→', () => loadProject(project.id)); open.setAttribute?.('aria-label', `打开项目 ${project.name}`);
     card.append(info, open); $('profiles').append(card);
   }
-  if (!value.profiles.length && !(value.drafts || []).length) $('profiles').append(text('p', '还没有接入项目。从下面开始，或接受同事的邀请。'));
   for (const profile of value.projects ? [] : value.profiles) {
     const card = document.createElement('div'); card.className = 'card'; const info = document.createElement('div');
     info.append(text('strong', `${profile.display_name || profile.agent_id} · ${profile.role === 'admin' ? '管理员' : '成员'}`), text('p', profile.repo));

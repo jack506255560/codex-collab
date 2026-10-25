@@ -64,7 +64,7 @@ const starVertex = `
     gl_PointSize = clamp(aSize * uPixelRatio * (8.0 / -mv.z), 2.0, 28.0 * uPixelRatio);
     vec2 screen = projected.xy / projected.w;
     float quietCenter = 1.0 - exp(-pow(screen.x * 2.2, 2.0) - pow(screen.y * 1.6, 2.0)) * .45;
-    vAlpha = (.65 + sin(uTime * .42 + aPhase) * .16) * quietCenter;
+    vAlpha = (.74 + sin(uTime * .42 + aPhase) * .18) * quietCenter;
     vTone = aTone;
     vSparkle = step(.83, aTone);
   }
@@ -82,8 +82,8 @@ const starFragment = `
     float radius = dot(p, p);
     if (radius > 1.0) discard;
     float core = exp(-radius * 80.0);
-    float halo = exp(-radius * 6.0) * .17;
-    float cross = (exp(-abs(p.x) * 65.0) + exp(-abs(p.y) * 65.0)) * exp(-radius * 7.0) * .18 * vSparkle;
+    float halo = exp(-radius * 6.0) * .2;
+    float cross = (exp(-abs(p.x) * 65.0) + exp(-abs(p.y) * 65.0)) * exp(-radius * 7.0) * .21 * vSparkle;
     float alpha = (core + halo + cross) * vAlpha * uOpacity;
     vec3 color = mix(uColorA, uColorB, smoothstep(.1, .8, vTone));
     color = mix(color, uColorC, vSparkle * .55);

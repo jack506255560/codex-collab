@@ -42,9 +42,31 @@
 <h1 tabindex="-1">让 Codex 组队工作。</h1>
 <p>在企业微信群里，连接你和同事的 Codex 会话，按角色分工、接力完成任务。</p>
 </div>
+<div id="home-start-options" class="home-start-options" role="group" aria-label="选择协作方式" hidden>
+<p class="start-prompt">第一次使用？选一种方式开始</p>
+<div class="start-options">
+<button id="home-start-admin" class="start-choice" data-view="admin">
+<span class="choice-mark" aria-hidden="true">＋</span>
+<span class="choice-copy">
+<strong>我来发起协作</strong>
+<span>接入代码项目，连接企业微信机器人，再邀请同事。</span>
+<small id="detected-project" hidden><span>已识别本机项目</span><code id="detected-project-path"></code></small>
+</span>
+<span class="choice-arrow" aria-hidden="true">→</span>
+</button>
+<button id="home-start-join" class="start-choice" data-view="join">
+<span class="choice-mark join-mark" aria-hidden="true">↗</span>
+<span class="choice-copy">
+<strong>我来加入同事</strong>
+<span>导入同事发来的邀请，接入他已创建的项目。</span>
+</span>
+<span class="choice-arrow" aria-hidden="true">→</span>
+</button>
+</div>
+</div>
 <div id="profiles" class="project-list" aria-label="我的项目">
 </div>
-<div class="home-actions">
+<div id="home-actions" class="home-actions">
 <button data-view="admin" class="button primary">＋ 接入一个项目</button>
 <button data-view="join" class="quiet-button">接受同事的邀请 →</button>
 </div>

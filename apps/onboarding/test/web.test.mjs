@@ -20,9 +20,15 @@ async function page(route, storage = new Map(), { href = 'http://localhost/', ap
   const ids = new Map(), calls = [], timers = new Map(); let timerId = 0;
   const element = (id) => { if (!ids.has(id)) ids.set(id, new Element(id)); return ids.get(id); };
   const sections = ['home', 'project', 'admin', 'join', 'own', 'existing', 'verification', 'profile', 'reset-view'].map(element);
+  const html = await readFile(new URL('../web/index.html', import.meta.url), 'utf8');
+  const viewLinks = [...html.matchAll(/<(?:button|a)\b[^>]*\bdata-view="([^"]+)"[^>]*>/g)].map(([tag, view], index) => {
+    const link = element(/\bid="([^"]+)"/.exec(tag)?.[1] || `view-link-${index}`); link.dataset.view = view; return link;
+  });
+  element('admin-form').elements.repo = element('admin-repo');
+  element('admin-form').elements.display_name = element('admin-display-name');
   const themeChoices = ['day', 'night'].map((theme) => { const choice = new Element(`theme-${theme}`); choice.dataset.themeChoice = theme; return choice; });
   const context = vm.createContext({
-    document: { body: appearance ? element('body') : undefined, getElementById: element, createElement: (tag) => new Element(tag), querySelectorAll: (selector) => selector === 'main>section' ? sections : selector === '[data-theme-choice]' ? themeChoices : [] },
+    document: { body: appearance ? element('body') : undefined, getElementById: element, createElement: (tag) => new Element(tag), querySelectorAll: (selector) => selector === 'main>section' ? sections : selector === '[data-theme-choice]' ? themeChoices : selector === '[data-view]' ? viewLinks : [] },
     FormData: class { constructor(form) { return Object.entries(form.input)[Symbol.iterator](); } },
     fetch: async (path, options) => {
       calls.push(path);
@@ -38,7 +44,7 @@ async function page(route, storage = new Map(), { href = 'http://localhost/', ap
   vm.runInContext(await readFile(new URL('../web/app.js', import.meta.url), 'utf8'), context);
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   await settle();
-  return { element, calls, settle, storage, themeStorage, themeChoices, context, tick: async () => { const next = timers.entries().next().value; if (next) { timers.delete(next[0]); await next[1](); await settle(); } }, activate: async (node) => { node.onclick(); await settle(); }, submit: async (id, input) => {
+  return { element, calls, settle, storage, themeStorage, themeChoices, context, tick: async () => { const next = timers.entries().next().value; if (next) { timers.delete(next[0]); await next[1](); await settle(); } }, activate: async (node) => { node.onclick({ preventDefault() {} }); await settle(); }, submit: async (id, input) => {
     const target = { input, elements: Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { value, checked: value === true }])) };
     element(id).onsubmit({ preventDefault() {}, target }); await settle(); return target;
   }, click: async (id) => { element(id).onclick(); await settle(); } };
@@ -65,6 +71,62 @@ test('night is the first-run wizard theme while explicit and saved choices are r
 
   const legacyTheme = await page((path) => path === '/api/overview' ? { profiles: [] } : assert.fail(path), new Map(), { appearance: true, href: 'http://localhost/?theme=studio' });
   assert.equal(legacyTheme.element('body').dataset.theme, 'day');
+});
+
+test('empty home offers two working entry points, hides duplicate actions and does not invent a detected project', async () => {
+  const p = await page((path) => path === '/api/overview' ? { profiles: [], projects: [] } : assert.fail(path));
+  assert.equal(p.element('home-start-options').hidden, false);
+  assert.equal(p.element('profiles').hidden, true);
+  assert.equal(p.element('profiles').children.length, 0);
+  assert.equal(p.element('home-actions').hidden, true);
+  assert.equal(p.element('detected-project').hidden, true);
+  await p.activate(p.element('home-start-admin'));
+  assert.equal(p.element('admin').hidden, false);
+  assert.equal(p.element('home').hidden, true);
+  await p.click('admin-back');
+  assert.equal(p.element('home').hidden, false);
+  await p.activate(p.element('home-start-join'));
+  assert.equal(p.element('join').hidden, false);
+  assert.deepEqual(p.calls, ['/api/overview', '/api/overview']);
+});
+
+test('empty home shows the detected repository as plain text and keeps unsaved project selection', async () => {
+  const detected = '/fixture/project with spaces/<product>';
+  let overview = { profiles: [], defaults: { repo: detected, display_name: 'Alice' } };
+  const p = await page((path) => path === '/api/overview' ? overview : assert.fail(path));
+  assert.equal(p.element('detected-project').hidden, false);
+  assert.equal(p.element('detected-project-path').textContent, detected);
+  assert.equal(p.element('admin-form').elements.repo.value, detected);
+  assert.equal(p.element('admin-form').elements.display_name.value, 'Alice');
+  await p.activate(p.element('home-start-admin'));
+  p.element('admin-form').elements.repo.value = '/fixture/another-project';
+  await p.click('admin-back');
+  assert.equal(p.element('admin-form').elements.repo.value, '/fixture/another-project');
+  overview = { profiles: [], defaults: { repo: '' } };
+  await p.context.overview();
+  assert.equal(p.element('detected-project').hidden, true);
+  assert.equal(p.element('detected-project-path').textContent, '');
+});
+
+test('project, unfinished draft and legacy profile homes retain existing actions and can return to empty state', async () => {
+  for (const existing of [
+    { projects: [{ id: 'project-one', name: 'product' }], profiles: [] },
+    { projects: [], profiles: [], drafts: [{ id: 'draft-one', agent_id: 'alice' }] },
+    { profiles: [{ id: 'legacy', agent_id: 'alice', role: 'admin', repo: '/fixture/product' }] },
+  ]) {
+    let overview = existing;
+    const p = await page((path) => path === '/api/overview' ? overview : assert.fail(path));
+    assert.equal(p.element('home-start-options').hidden, true);
+    assert.equal(p.element('profiles').hidden, false);
+    assert.equal(p.element('profiles').children.length, 1);
+    assert.equal(p.element('home-actions').hidden, false);
+    overview = { profiles: [], projects: [] };
+    await p.context.overview();
+    assert.equal(p.element('home-start-options').hidden, false);
+    assert.equal(p.element('profiles').hidden, true);
+    assert.equal(p.element('profiles').children.length, 0);
+    assert.equal(p.element('home-actions').hidden, true);
+  }
 });
 
 test('reimporting waiting and ready members opens existing progress without reconnecting discovery', async () => {
