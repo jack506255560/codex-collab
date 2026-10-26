@@ -3,7 +3,9 @@ import { join, resolve } from 'node:path';
 import { readFile, readdir, realpath } from 'node:fs/promises';
 import { git } from '../../packages/peer/store.mjs';
 
-export const workspaceHome = () => resolve(process.env.CODEX_COLLAB_HOME || join(homedir(), '.config/codex-collab/workspace'));
+// One persistent workspace per OS user, shared by npm, source and login services.
+// Working directories and the legacy CODEX_COLLAB_HOME must not fork real profiles.
+export const workspaceHome = () => resolve(join(homedir(), '.config/codex-collab/workspace'));
 export async function localDefaults(cwd = process.cwd()) {
   let repo = '';
   try { repo = await git(cwd, 'rev-parse', '--show-toplevel'); } catch { /* Opening outside a project is supported. */ }

@@ -22,7 +22,7 @@ test('wizard APIs require local Host, matching Origin and personal cookie, rejec
     const failure = await post('discovery', {}, headers); assert.equal(failure.status, 400); assert.doesNotMatch(await failure.text(), /SECRET|credentials/);
     assert.equal((await post('constructor', {}, headers)).status, 404);
     assert.equal((await post('discovery', { content: 'x'.repeat(760000) }, headers)).status, 413);
-    const page = await fetch(app.origin); assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/); assert.match(await page.text(), /接入一个项目/);
+    const page = await fetch(app.origin); assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/); assert.match(await page.text(), /连接我的 Codex/);
   } finally { await app.close(); }
   assert.equal(closed, true);
 });

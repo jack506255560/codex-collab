@@ -42,14 +42,14 @@
 <h1 tabindex="-1">让 Codex 组队工作。</h1>
 <p>在企业微信群里，连接你和同事的 Codex 会话，按角色分工、接力完成任务。</p>
 </div>
-<div id="home-start-options" class="home-start-options" role="group" aria-label="选择协作方式" hidden>
+<div id="home-start-options" class="home-start-options" role="group" aria-label="选择接入方式" hidden>
 <p class="start-prompt">第一次使用？选一种方式开始</p>
 <div class="start-options">
 <button id="home-start-admin" class="start-choice" data-view="admin">
 <span class="choice-mark" aria-hidden="true">＋</span>
 <span class="choice-copy">
-<strong>我来发起协作</strong>
-<span>接入代码项目，连接企业微信机器人，再邀请同事。</span>
+<strong>连接我的 Codex</strong>
+<span>先把自己的会话接到群里，随时可以邀请同事。</span>
 <small id="detected-project" hidden><span>已识别本机项目</span><code id="detected-project-path"></code></small>
 </span>
 <span class="choice-arrow" aria-hidden="true">→</span>
@@ -67,11 +67,12 @@
 <div id="profiles" class="project-list" aria-label="我的项目">
 </div>
 <div id="home-actions" class="home-actions">
-<button data-view="admin" class="button primary">＋ 接入一个项目</button>
+<button data-view="admin" class="button primary">＋ 连接我的 Codex</button>
 <button data-view="join" class="quiet-button">接受同事的邀请 →</button>
 </div>
 <details class="home-more">
-<summary>其他接入方式</summary>
+<summary>接入指引与其他方式</summary>
+<button data-view="personal" class="quiet-button">只想连接自己的会话？ →</button>
 <button data-view="existing" class="quiet-button">导入已有配置 →</button>
 <p id="startup-status" class="muted">
 </p>
@@ -81,6 +82,26 @@
 <div id="removed-profiles">
 </div>
 </details>
+</details>
+</section>
+<section id="personal" class="scene setup-scene" hidden>
+<button data-view="home" class="back-link">← 返回</button>
+<div class="intro">
+<h1 tabindex="-1">把你的 Codex 带进群里。</h1>
+<p>一个机器人，一个会话，就可以开始。随时可以邀请同事一起协作。</p>
+</div>
+<ol class="personal-steps">
+<li><strong>选一个代码项目</strong><span>选择本机已有仓库，也可以从 Git 地址拉取。</span></li>
+<li><strong>连接企业微信机器人</strong><span>填入 Bot ID 和 Secret，再到群里发送验证码。</span></li>
+<li><strong>把启用指令发给目标会话</strong><span>在 Codex 打开该项目，将向导给出的指令发到你想绑定的会话。绑定并观察到轮询后，就能在群里 @ 机器人了。</span></li>
+</ol>
+<div id="personal-existing" class="help-note" hidden>已经接入过这个项目？<button data-view="home" class="quiet-button">回到项目列表 →</button>打开项目中自己的机器人，继续绑定即可；想换一个会话，在“管理与重置”中选择重新绑定。</div>
+<div class="step-actions">
+<button id="personal-start" data-view="admin" class="button primary">连接一个会话 →</button>
+</div>
+<details class="personal-preparation">
+<summary>需要提前准备什么？</summary>
+<p>准备一个可访问远程的 Git 仓库、已加入企业微信群的 API 模式智能机器人，以及目标 Codex 会话。会话需按启用指令开启协作定时轮询，才能处理群消息；无需先邀请同事或设置多人分工。</p>
 </details>
 </section>
 <section id="project" class="scene project-scene" hidden>
@@ -139,7 +160,7 @@
 </div>
 <div class="intro">
 <h1 tabindex="-1">从一个项目开始。</h1>
-<p>确认电脑里的项目，其他信息会自动带入。</p>
+<p>选好目录，下一步连接机器人。已接入的项目会直接打开原连接。</p>
 </div>
 <div class="step-content">
 <label>项目来源<select id="admin-repo-mode" name="repo_mode">
@@ -191,6 +212,7 @@
 <div class="intro">
 <h1 tabindex="-1">连上你的企微机器人。</h1>
 <p>填写这两项，就可以继续了。</p>
+<p id="bot-project-context" class="muted"></p>
 </div>
 <div class="step-content">
 <div class="bot-fields">
@@ -494,6 +516,7 @@
 </span>
 <span class="binding-node codex-node">⌘</span>
 </div>
+<p class="binding-caption">在 Codex 打开这个项目，把下面的指令发到你想绑定的会话。</p>
 <pre id="binding-text">
 </pre>
 <button id="copy-binding" class="button primary">复制启用指令</button>
@@ -505,6 +528,7 @@
 <button id="copy-binding-details">复制详细指令</button>
 </details>
 </div>
+<p id="polling-help" class="help-note" hidden>请回到已绑定的 Codex 会话，确认协作定时轮询已启用。这里会自动检查。</p>
 <div class="step-actions">
 <button id="profile-done" class="button primary" hidden>回到项目 →</button>
 <button id="profile-start" class="button primary" hidden>恢复机器人连接 →</button>

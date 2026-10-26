@@ -141,3 +141,27 @@ test('automatic progress waits for explicit approval, completes once, and leaves
     assert.equal(f.calls.filter((call) => call.command === 'start').length, starts);
   } finally { await f.cleanup(); }
 });
+
+
+test('project check reuses an existing local connection even offline without exposing credentials or starting a runner', async () => {
+  const f = await fixture();
+  try {
+    const admin = await f.admin();
+    const starts = f.calls.length;
+    const peerBefore = await readFile(admin.config_path, 'utf8');
+    const alias = join(f.root, 'project-alias'); await symlink(f.repos.alice, alias);
+    git(f.repos.alice, 'remote', 'set-url', 'origin', join(f.root, 'unreachable.git'));
+    const selected = await f.manager.prepareProject({ repo: alias });
+    assert.deepEqual(selected, { repo: admin.repo, existing_profile: { id: admin.id } });
+    assert.doesNotMatch(JSON.stringify(selected), /fixture-secret|private_key/);
+    assert.equal(f.calls.length, starts);
+    assert.equal(await readFile(admin.config_path, 'utf8'), peerBefore);
+    await assert.rejects(f.manager.prepareAdmin({ repo: alias, ...bot('Other'), test_command: 'sh test.sh' }), /已经接入/);
+    assert.equal((await f.manager.overview()).drafts.length, 0);
+    // A different clone still gets an independent connection, even for this same remote.
+    assert.equal((await f.manager.prepareProject({ repo: f.repos.bob })).existing_profile, undefined);
+    const state = await f.manager.state(admin.id); state.phase = 'removed'; await f.manager.save(state);
+    git(f.repos.alice, 'remote', 'set-url', 'origin', f.remote);
+    assert.equal((await f.manager.prepareProject({ repo: alias })).existing_profile, undefined);
+  } finally { await f.cleanup(); }
+});

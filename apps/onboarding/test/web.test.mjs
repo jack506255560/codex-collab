@@ -19,7 +19,7 @@ class Element {
 async function page(route, storage = new Map(), { href = 'http://localhost/', appearance = false, themeStorage = new Map() } = {}) {
   const ids = new Map(), calls = [], timers = new Map(); let timerId = 0;
   const element = (id) => { if (!ids.has(id)) ids.set(id, new Element(id)); return ids.get(id); };
-  const sections = ['home', 'project', 'admin', 'join', 'own', 'existing', 'verification', 'profile', 'reset-view'].map(element);
+  const sections = ['home', 'personal', 'project', 'admin', 'join', 'own', 'existing', 'verification', 'profile', 'reset-view'].map(element);
   const html = await readFile(new URL('../web/index.html', import.meta.url), 'utf8');
   const viewLinks = [...html.matchAll(/<(?:button|a)\b[^>]*\bdata-view="([^"]+)"[^>]*>/g)].map(([tag, view], index) => {
     const link = element(/\bid="([^"]+)"/.exec(tag)?.[1] || `view-link-${index}`); link.dataset.view = view; return link;
@@ -81,6 +81,8 @@ test('empty home offers two working entry points, hides duplicate actions and do
   assert.equal(p.element('home-actions').hidden, true);
   assert.equal(p.element('detected-project').hidden, true);
   await p.activate(p.element('home-start-admin'));
+  assert.equal(p.element('personal').hidden, true);
+  assert.equal(p.element('personal-existing').hidden, true);
   assert.equal(p.element('admin').hidden, false);
   assert.equal(p.element('home').hidden, true);
   await p.click('admin-back');
@@ -120,12 +122,14 @@ test('project, unfinished draft and legacy profile homes retain existing actions
     assert.equal(p.element('profiles').hidden, false);
     assert.equal(p.element('profiles').children.length, 1);
     assert.equal(p.element('home-actions').hidden, false);
+    assert.equal(p.element('personal-existing').hidden, false);
     overview = { profiles: [], projects: [] };
     await p.context.overview();
     assert.equal(p.element('home-start-options').hidden, false);
     assert.equal(p.element('profiles').hidden, true);
     assert.equal(p.element('profiles').children.length, 0);
     assert.equal(p.element('home-actions').hidden, true);
+    assert.equal(p.element('personal-existing').hidden, true);
   }
 });
 
@@ -189,7 +193,7 @@ test('administrator failure recovers new persisted profile despite canonical pat
   });
   await p.submit('admin-form', { repo: '/fixture/project', agent_id: 'alice', capabilities: 'backend', test_argv: '["npm","test"]', bot_id: 'fixture', secret: 'fixture' });
   await p.click('confirm-code');
-  assert.equal(p.element('profile-title').textContent, 'alice · 管理员'); assert.ok(p.calls.includes('/api/profile?id=new'));
+  assert.equal(p.element('profile-title').textContent, 'alice · 我的机器人'); assert.ok(p.calls.includes('/api/profile?id=new'));
   assert.match(p.element('notice').textContent, /接入中断.*继续接入/);
 });
 
@@ -222,7 +226,7 @@ test('own bot form connects and verifies without an export or password and clear
   const form = await p.submit('own-form', ownInput());
   assert.equal(form.elements.secret.value, ''); assert.equal(p.element('verification').hidden, false);
   await p.click('confirm-code');
-  assert.equal(p.element('profile-title').textContent, 'bob · 成员');
+  assert.equal(p.element('profile-title').textContent, 'bob · 我的机器人');
   assert.ok(!p.calls.some((path) => path.startsWith('/api/export') || path === '/api/import' || path === '/api/approve'));
   assert.equal(p.element('notice').textContent, '');
 });
@@ -258,7 +262,7 @@ test('resuming a ready own bot opens its saved profile without reconnecting veri
   });
   await p.activate(p.element('profiles').children[0].children[1]);
   await p.activate(p.element('exports').children[0].children[1]);
-  assert.equal(p.element('profile-title').textContent, 'bob · 成员');
+  assert.equal(p.element('profile-title').textContent, 'bob · 我的机器人');
   assert.ok(!p.calls.includes('/api/discovery')); assert.equal(p.element('notice').textContent, '');
 });
 
@@ -322,7 +326,7 @@ test('verified group proof automatically advances once without a Continue click'
   });
   await p.submit('join-form', importInput()); await p.tick();
   assert.equal(p.element('profile').hidden, false); assert.equal(verifies, 1); await p.tick(); assert.equal(verifies, 1);
-  assert.equal(p.element('setup-steps').children.length, 6);
+  assert.equal(p.element('setup-steps').children.length, 5);
   assert.match(p.element('next-step').textContent, /自动等待管理员/);
   assert.doesNotMatch([...p.storage.values()].join(''), /password|fixture-password|secret/);
 });
@@ -366,7 +370,7 @@ test('a delayed automatic response cannot replace a different selected profile',
   });
   await p.activate(p.element('profiles').children[0].children[1]); const pendingTick = p.tick(); await p.settle();
   await p.activate(p.element('profiles').children[1].children[1]); release(); await pendingTick;
-  assert.equal(p.element('profile-title').textContent, 'bob · 成员');
+  assert.equal(p.element('profile-title').textContent, 'bob · 我的机器人');
 });
 
 test('batch rows submit explicit flags and reveal passwords only through delivery', async () => {
@@ -392,7 +396,7 @@ test('batch rows submit explicit flags and reveal passwords only through deliver
 test('refresh restores an imported member and approval automatically opens binding instructions', async () => {
   const storage = new Map([['codex-collab-onboarding', JSON.stringify({ profile_id: 'member' })]]);
   let phase = 'imported', approved = false, verifies = 0;
-  const profile = () => ({ ...member(phase), display_name: 'Bob', binding_prompt: 'enable Bob', detailed_binding_prompt: 'details' });
+  const profile = () => ({ ...member(phase), display_name: 'Bob', runner: { online: phase === 'ready' }, binding_prompt: 'enable Bob', detailed_binding_prompt: 'details' });
   const p = await page((path) => {
     if (path === '/api/overview') return { profiles: [profile()] };
     if (path === '/api/profile?id=member') return profile();
@@ -405,7 +409,7 @@ test('refresh restores an imported member and approval automatically opens bindi
   await p.tick(); assert.equal(verifies, 1); assert.match(p.element('next-step').textContent, /自动等待管理员/);
   await p.tick(); assert.equal(p.element('binding').hidden, true);
   approved = true; await p.tick(); assert.equal(p.element('binding').hidden, false);
-  assert.equal(p.element('binding-text').textContent, 'enable Bob'); assert.equal(p.element('profile-title').textContent, 'Bob（bob） · 成员');
+  assert.equal(p.element('binding-text').textContent, 'enable Bob'); assert.equal(p.element('profile-title').textContent, 'Bob（bob） · 我的机器人');
   assert.equal(verifies, 1); assert.ok(!p.calls.includes('/api/import'));
   assert.equal(storage.get('codex-collab-onboarding'), JSON.stringify({ profile_id: 'member' }));
 });
@@ -626,11 +630,15 @@ test('copying the binding instruction does not finish setup until actual binding
   const value = { ...member('ready'), runner: { online: true }, desktop: { binding: null }, poll_recent: false, can_receive_tasks: false, binding_prompt: 'enable Bob' };
   const p = await page((path) => path === '/api/overview' ? { profiles: [value] } : value, storage);
   assert.equal(p.element('profile-heading').textContent, '最后，连接你的对话。');
+  assert.equal(p.element('profile-done').hidden, true);
+  assert.equal(p.element('polling-help').hidden, true);
   await p.click('copy-binding'); assert.match(p.element('copy-binding').textContent, /已复制/); assert.equal(p.element('profile-heading').textContent, '最后，连接你的对话。');
   value.desktop.binding = { thread_id: 'fixture-thread' }; await p.tick();
   assert.equal(p.element('profile-heading').textContent, '对话已绑定。'); assert.equal(p.element('binding').hidden, true); assert.match(p.element('next-step').textContent, /等待实际轮询/);
+  assert.equal(p.element('profile-done').hidden, true); assert.equal(p.element('polling-help').hidden, false);
   value.poll_recent = true; value.can_receive_tasks = true; await p.tick();
   assert.equal(p.element('profile-heading').textContent, '就这么简单。'); assert.equal(p.element('profile-art').dataset.state, 'success'); assert.equal(p.element('profile-step-progress').hidden, true);
+  assert.equal(p.element('profile-done').hidden, false); assert.equal(p.element('polling-help').hidden, true);
   assert.equal(storage.get('codex-collab-onboarding'), JSON.stringify({ profile_id: 'member' }));
 });
 
@@ -656,4 +664,37 @@ test('an unavailable profile cannot keep showing the previously selected robot a
   await assert.rejects(vm.runInContext("loadProfile('unavailable')", p.context), /暂时无法读取/);
   assert.equal(p.element('profile-heading').textContent, '正在读取连接…'); assert.equal(p.element('profile-art').dataset.state, 'waiting');
   assert.equal(p.element('binding').hidden, true); assert.equal(p.element('profile-done').hidden, true); assert.equal(p.element('admin-tools').hidden, true);
+});
+
+
+test('selecting an already connected project opens its existing robot before asking for credentials or a test command', async () => {
+  const value = { ...member('ready'), runner: { online: true }, binding_prompt: 'enable Bob' };
+  const p = await page((path) => {
+    if (path === '/api/overview') return { profiles: [value] };
+    if (path === '/api/project-check') return { repo: value.repo, existing_profile: { id: value.id } };
+    if (path === '/api/profile?id=member&local=1') return value;
+    assert.fail(path);
+  });
+  const command = requiredField('test-command');
+  const guide = guidedForm(p, 'admin', { repo_mode: 'existing', repo: value.repo, secret: 'unused-secret' }, [[command], []]);
+  await p.activate(p.element('home-start-admin'));
+  assert.equal(await guide.advance(), false);
+  assert.equal(p.element('profile').hidden, false);
+  assert.equal(p.element('admin').hidden, true);
+  assert.equal(guide.form.elements.secret.value, '');
+  assert.equal(command.reported, undefined);
+  assert.ok(!p.calls.includes('/api/admin-prepare'));
+  assert.match(p.element('notice').textContent, /已经接入/);
+  assert.equal(p.storage.get('codex-collab-onboarding'), JSON.stringify({ profile_id: value.id }));
+});
+
+test('a stopped robot only offers restoring its connection as the primary next action', async () => {
+  const value = { ...member('ready'), runner: { online: false }, desktop: { binding: null }, binding_prompt: 'enable Bob' };
+  const storage = new Map([['codex-collab-onboarding', JSON.stringify({ profile_id: value.id })]]);
+  const p = await page((path) => path === '/api/overview' ? { profiles: [value] } : value, storage);
+  assert.equal(p.element('profile-start').hidden, false);
+  assert.equal(p.element('binding').hidden, true);
+  assert.equal(p.element('profile-done').hidden, true);
+  assert.equal(p.element('polling-help').hidden, true);
+  assert.match(p.element('next-step').textContent, /启动机器人连接/);
 });

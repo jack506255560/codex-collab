@@ -49,6 +49,10 @@ async function advanceGuide(name) {
       if (!validatePanel(panels[0])) return false;
     }
     if (name === 'join' && !await inspectInvite()) return false;
+    if (name === 'admin') {
+      const form = $('admin-form');
+      $('bot-project-context').textContent = `${form.elements.repo.value.split(/[\\/]/).filter(Boolean).at(-1)} · 验证：${$('test-command').value}`;
+    }
     setGuide(name, 1); return false;
   }
   return true;
@@ -91,6 +95,7 @@ async function overview() {
   }
   $('home-start-options').hidden = hasWork;
   $('home-actions').hidden = !hasWork;
+  $('personal-existing').hidden = !hasWork;
   $('profiles').hidden = !hasWork;
   const detectedRepo = value.defaults?.repo?.trim() || '';
   $('detected-project').hidden = !detectedRepo;
@@ -105,13 +110,13 @@ async function overview() {
   }
   for (const draft of value.drafts || []) {
     const card = document.createElement('div'); card.className = 'card';
-    card.append(text('span', `${draft.display_name || draft.agent_id} · 待完成群验证`), button('继续创建团队', () => openDraft(draft.id))); $('profiles').append(card);
+    card.append(text('span', `${draft.display_name || draft.agent_id} · 待完成群验证`), button('继续连接', () => openDraft(draft.id))); $('profiles').append(card);
   }
   for (const [index, project] of (value.projects || []).entries()) {
     const card = document.createElement('div'); card.className = 'card project-card'; card.style?.setProperty('--order', Math.min(index, 7));
     const info = document.createElement('div'); info.className = 'project-card-info';
     const icon = text('span', '⌘'); icon.className = 'project-icon'; icon.setAttribute?.('aria-hidden', 'true');
-    info.append(icon, text('h3', project.name), text('p', '和团队里的 Codex 一起工作'));
+    info.append(icon, text('h3', project.name), text('p', '在群里与 Codex 协作'));
     const open = button('→', () => loadProject(project.id)); open.setAttribute?.('aria-label', `打开项目 ${project.name}`);
     card.append(info, open); $('profiles').append(card);
   }
@@ -240,11 +245,12 @@ async function completeVerification() {
 }
 function renderSteps(value) {
   const verified = value.phase !== 'imported', approved = ['configuring', 'ready'].includes(value.phase);
-  const steps = [['项目与机器人资料', true], ['企业微信群身份验证', verified], ['管理员确认入队', value.role === 'admin' ? verified : approved], ['本机 MCP 与 Skill', value.phase === 'ready' && value.project_setup?.mcp_configured && value.project_setup?.skill_installed], ['绑定 Codex 对话', !!value.desktop?.binding], ['观察到对话轮询', !!value.poll_recent]];
+  const steps = [['项目与机器人资料', true], ['群验证与本机配置', verified && value.phase === 'ready' && value.project_setup?.mcp_configured && value.project_setup?.skill_installed], ['绑定 Codex 会话', !!value.desktop?.binding], ['开始接收群任务', !!value.can_receive_tasks]];
+  if (value.role !== 'admin') steps.splice(1, 0, [value.own_agent ? '确认机器人身份' : '同事确认接入', approved]);
   $('setup-steps').replaceChildren(); let active = false;
   for (const [label, done] of steps) { const row = text('li', `${done ? '✓ ' : ''}${label}`); row.className = done ? 'done' : !active ? 'active' : ''; if (!done) active = true; $('setup-steps').append(row); }
   const stopped = value.phase === 'ready' && !value.runner?.online;
-  $('next-step').textContent = value.error ? '接入暂时停在这里。处理下方问题后点击“继续接入”。' : value.can_receive_tasks ? '已观察到实际轮询，可以在协作群 @ 机器人发送任务。请保持当前对话的协作自动化启用。' : value.phase === 'waiting' ? '申请已提交，正在自动等待管理员确认。管理员工作台会自动显示申请。' : value.phase !== 'ready' ? '按当前提示继续，完成后向导会自动进入下一步。' : stopped ? '机器人连接已停止。需要接任务时点击“启动机器人连接”。' : !value.desktop?.binding ? '在 Codex 打开此项目，加载项目 MCP 和 Skill，再把启用指令发到要绑定的对话。' : '对话已绑定，正在等待实际轮询记录。';
+  $('next-step').textContent = value.error ? '接入暂时停在这里。处理下方问题后点击“继续接入”。' : value.can_receive_tasks ? '已观察到实际轮询，可以在协作群 @ 机器人发送任务。请保持当前对话的协作自动化启用。' : value.phase === 'waiting' ? value.own_agent ? '身份已验证，正在自动完成接入。' : '申请已提交，正在自动等待管理员确认。管理员工作台会自动显示申请。' : value.phase !== 'ready' ? '按当前提示继续，完成后向导会自动进入下一步。' : stopped ? '机器人连接已停止。需要接任务时点击“启动机器人连接”。' : !value.desktop?.binding ? '在 Codex 打开此项目，加载项目 MCP 和 Skill，再把启用指令发到要绑定的对话。' : !value.poll_recent ? '对话已绑定，正在等待实际轮询记录。' : '正在检查机器人认证与连接状态。';
 }
 function watchProfile(id, epoch) {
   let failures = 0;
@@ -263,17 +269,18 @@ function watchProfile(id, epoch) {
   };
   timer = setTimeout(tick, 5000);
 }
-async function loadProfile(id) {
+async function loadProfile(id, { localOnly = false } = {}) {
   repositoryPolicy = null; $('repository-policy-form').hidden = true;
   if (currentView !== 'profile' || currentId !== id) {
     $('admin-tools').open = false; $('connection-details').open = false;
     $('profile-heading').textContent = '正在读取连接…'; $('profile-art').dataset.state = 'waiting';
-    for (const key of ['binding', 'profile-done', 'profile-start', 'admin-tools', 'pending-requests', 'profile-back']) $(key).hidden = true;
+    for (const key of ['binding', 'polling-help', 'profile-done', 'profile-start', 'admin-tools', 'pending-requests', 'profile-back']) $(key).hidden = true;
     for (const key of ['profile-title', 'profile-repo', 'next-step', 'config-path']) $(key).textContent = '';
     for (const key of ['checks', 'progress', 'setup-steps']) $(key).replaceChildren();
   }
   currentId = id; remember({ profile_id: id }); show('profile'); $('copy-binding').textContent = '复制启用指令'; const epoch = viewEpoch; let value;
-  try { value = await api(`profile?id=${id}`); } catch (error) { value = await api(`profile?id=${id}&local=1`); notice(`团队同步暂未成功，本机状态仍可查看。${error.message}`); }
+  if (localOnly) value = await api(`profile?id=${id}&local=1`);
+  else try { value = await api(`profile?id=${id}`); } catch (error) { value = await api(`profile?id=${id}&local=1`); notice(`团队同步暂未成功，本机状态仍可查看。${error.message}`); }
   if (epoch !== viewEpoch) return;
   if (value.phase === 'removed') { show('home'); await overview(); return; }
   currentProjectId = value.project_id || null;
@@ -287,16 +294,17 @@ function renderProfile(value, automatic = false) {
   const state = complete ? 'success' : 'waiting';
   if ($('profile-art').dataset.state !== state) $('profile-art').dataset.state = state;
   $('profile-step-progress').hidden = complete;
-  $('profile-done').hidden = !ready || !bound;
+  $('profile-done').hidden = !complete;
+  $('polling-help').hidden = !ready || !bound || !!value.poll_recent || !value.runner?.online;
   $('profile-start').hidden = !ready || !!value.runner?.online;
   const requests = value.requests || [];
   $('pending-requests').hidden = !requests.length;
   $('pending-requests').textContent = requests.length ? `${requests.length} 位同事等待你的确认 →` : '';
 
   $('reset-conversation').hidden = value.phase !== 'ready'; $('reset-robot').hidden = value.phase !== 'ready';
-  $('profile-title').textContent = `${value.display_name && value.display_name !== value.agent_id ? `${value.display_name}（${value.agent_id}）` : value.agent_id} · ${value.role === 'admin' ? '管理员' : '成员'}`; $('profile-repo').textContent = `${value.repo}${value.base_branch ? ` · 基准：${value.remote_name || '远程'}/${value.base_branch}` : ''}`;
+  $('profile-title').textContent = `${value.display_name && value.display_name !== value.agent_id ? `${value.display_name}（${value.agent_id}）` : value.agent_id} · 我的机器人`; $('profile-repo').textContent = `${value.repo}${value.base_branch ? ` · 基准：${value.remote_name || '远程'}/${value.base_branch}` : ''}`;
   $('profile-diagnostics').hidden = !value.config_path; $('config-path').textContent = value.config_path || '';
-  $('checks').replaceChildren(); $('progress').replaceChildren(); $('binding').hidden = !ready || bound; $('runner-actions').hidden = value.phase !== 'ready'; $('diagnostic-actions').hidden = value.phase !== 'ready'; $('admin-tools').hidden = value.role !== 'admin' || value.phase !== 'ready';
+  $('checks').replaceChildren(); $('progress').replaceChildren(); $('binding').hidden = !ready || bound || !value.runner?.online; $('runner-actions').hidden = value.phase !== 'ready'; $('diagnostic-actions').hidden = value.phase !== 'ready'; $('admin-tools').hidden = value.role !== 'admin' || value.phase !== 'ready';
   if (value.phase === 'ready') {
     $('binding-text').textContent = value.binding_prompt; $('binding-details').textContent = value.detailed_binding_prompt || value.binding_prompt;
     for (const [label, ok, wait] of [['项目 MCP', value.project_setup?.mcp_configured, '待配置'], ['项目 Skill', value.project_setup?.skill_installed, '待配置'], ['企业微信机器人', value.runner?.wecom === 'authenticated', value.runner?.online ? '连接中' : '已停止'], ['目标 Codex 对话', !!value.desktop?.binding, '待绑定'], ['对话实际轮询', value.poll_recent, value.poll_observed ? '最近未观察到轮询' : '待观察'], ['可接收任务', value.can_receive_tasks, '尚未满足条件']]) {
@@ -397,6 +405,12 @@ async function checkProject() {
   const current = values($('admin-form'));
   if (['repo_mode', 'repo', 'remote', 'destination', 'remote_name', 'base_branch'].some((key) => current[key] !== snapshot[key])) return;
   const form = $('admin-form'); form.elements.repo.value = selected.repo; $('admin-repo-mode').value = 'existing'; repoMode('admin');
+  if (selected.existing_profile) {
+    form.elements.secret.value = '';
+    await loadProfile(selected.existing_profile.id, { localOnly: true });
+    notice('这个项目已经接入，已打开原来的机器人连接。');
+    return;
+  }
   $('repository-options').hidden = false;
   for (const [id, options, chosen, placeholder] of [
     ['admin-remote-name', selected.remotes || [], selected.remote_name, '请选择协作远程'],

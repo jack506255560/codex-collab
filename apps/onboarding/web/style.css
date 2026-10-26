@@ -104,6 +104,12 @@ body[data-theme="night"] .project-icon.sand { color: #cfbc9b; background: #3c372
 .small-link .icon { width: 13px; height: 13px; }
 .disclosure { margin-top: 24px; display: grid; grid-template-columns: auto 1fr; gap: 10px 18px; color: var(--muted); padding: 17px 20px; background: var(--wash); border-radius: 10px; font-size: 10px; }
 .disclosure code { font: 10px/1.6 ui-monospace, monospace; overflow-wrap: anywhere; color: var(--ink); }
+.personal-steps { list-style: none; counter-reset: personal-step; padding: 0; margin: 34px 0; display: grid; gap: 24px; }
+.personal-steps li { counter-increment: personal-step; display: grid; grid-template-columns: 28px 1fr; gap: 7px 14px; }
+.personal-steps li::before { content: counter(personal-step, decimal-leading-zero); grid-row: span 2; color: var(--accent); font: 11px/1.8 ui-monospace, monospace; }
+.personal-steps strong { font-size: 13px; font-weight: 500; }
+.personal-steps span { color: var(--muted); font-size: 11px; line-height: 1.9; }
+.personal-preparation { margin-top: 30px; }
 /* One task at a time. The surrounding page stays quiet during setup. */
 .setup-scene { max-width: 440px; margin: 0 auto; }
 .setup-scene .back-link { margin-bottom: 28px; }

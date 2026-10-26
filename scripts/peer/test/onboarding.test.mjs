@@ -287,9 +287,10 @@ test('refresh CLI generates a new saved prompt but never edits a desktop binding
   try {
     const binding = join(f.dataDir, 'desktop-binding.json');
     await writeFile(binding, '{"thread_id":"fixture-thread"}\n', { mode: 0o600 });
-    const output = JSON.parse(execFileSync(process.execPath, [cli, 'refresh-project', f.configPath], { encoding: 'utf8' }));
+    const options = { cwd: f.repo, env: { ...process.env, HOME: f.dir, USERPROFILE: f.dir } };
+    const output = JSON.parse(execFileSync(process.execPath, [cli, 'refresh-project', f.configPath], { ...options, encoding: 'utf8' }));
     assert.equal(output.agent_id, 'bob'); assert.equal(output.heartbeat_updated, false);
     assert.equal(await readFile(binding, 'utf8'), '{"thread_id":"fixture-thread"}\n');
-    assert.throws(() => execFileSync(process.execPath, [cli, 'refresh-project'], { stdio: 'pipe' }), { status: 1 });
+    assert.throws(() => execFileSync(process.execPath, [cli, 'refresh-project'], { ...options, stdio: 'pipe' }), { status: 1 });
   } finally { await f.cleanup(); }
 });

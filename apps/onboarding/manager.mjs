@@ -75,7 +75,7 @@ function projectMcpConfigured(projectConfig, configPath, config) {
   const section = mcpSection(projectConfig, `team-collab-${config.agent_id}`);
   return !/^\s*enabled\s*=\s*false\s*(?:#.*)?$/m.test(section) && paths.some((path) => section.includes(JSON.stringify(path)));
 }
-async function ensureRepo(path, options = {}) {
+async function localRepository(path) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw new SetupError('请选择业务仓库的本机绝对路径。');
   let repo;
   try { repo = await realpath(path); } catch { throw new SetupError('请选择存在的业务仓库目录。'); }
@@ -85,6 +85,10 @@ async function ensureRepo(path, options = {}) {
     if (error instanceof SetupError) throw error;
     throw new SetupError('请选择 Git 仓库根目录。');
   }
+  return repo;
+}
+async function ensureRepo(path, options = {}) {
+  const repo = await localRepository(path);
   try { return { repo, ...await (options.remoteOnly ? resolveRemote(repo, options) : inspectRepository(repo, options)) }; }
   catch (error) { if (error instanceof RepositoryError) throw new SetupError(error.message); throw gitFailure(error); }
 }
@@ -176,8 +180,11 @@ export class SetupManager {
   async prepareProject(input) {
     const path = input.repo_mode === 'clone'
       ? await cloneRepository({ remote: input.remote, destination: input.destination || suggestedRepo(input.remote, memberFields({ ...input, display_name: input.display_name || input.agent_id || 'owner' }).agent_id), privateHome: this.home }) : input.repo;
-    const selected = await ensureRepo(path, { remoteName: input.remote_name, baseBranch: input.base_branch, allowSelection: true });
-    if (inside(selected.repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
+    const repo = await localRepository(path);
+    if (inside(repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
+    const existing = (await this.localStates()).find((state) => state.phase !== 'removed' && state.repo === repo);
+    if (existing) return { repo, existing_profile: { id: existing.id } };
+    const selected = await ensureRepo(repo, { remoteName: input.remote_name, baseBranch: input.base_branch, allowSelection: true });
     return { ...selected, tests: await recommendTests(selected.repo) };
   }
   draftPath(id) { if (!uuidPattern.test(id || '')) throw new SetupError('无效创建记录。'); return join(this.home, 'drafts', `${id}.json`); }
@@ -187,7 +194,7 @@ export class SetupManager {
     if (input.team_name != null && (typeof input.team_name !== 'string' || input.team_name.length > 80 || /[\x00-\x1f\x7f]/.test(input.team_name))) throw new SetupError('团队名称最多 80 个字符。');
     const argv = input.test_command ? commandArgv(input.test_command) : testArgv(input.test_argv);
     const selected = await this.prepareProject(input);
-    for (const profile of (await this.overview()).profiles) if (profile.repo === selected.repo) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
+    if (selected.existing_profile) throw new SetupError('这个项目已经接入，请打开现有机器人继续绑定；增加机器人请从项目页操作，并使用独立 clone。');
     if (selected.selection_required) throw new SetupError('请先检查项目并选择协作远程和业务基准分支。');
     const draft = { id: randomUUID(), input: { ...fields, repo: selected.repo, remote_name: selected.remote_name, remote_url: selected.remote, base_branch: selected.base_branch, test_argv: argv, team_name: input.team_name?.trim() || null,
       bot_id: input.bot_id, secret: input.secret } };

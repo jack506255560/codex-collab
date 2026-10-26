@@ -89,8 +89,9 @@ test('legacy migration rechecks stop intent while holding the cross-process cont
 });
 
 test('default launcher exits while a private background workbench stays alive and is reused', { timeout: 25000 }, async () => {
-  const home = await mkdtemp(join(tmpdir(), 'collab-background-')); let pid;
-  const env = { ...process.env, CODEX_COLLAB_HOME: home };
+  const userHome = await mkdtemp(join(tmpdir(), 'collab-background-')); let pid;
+  const home = join(userHome, '.config/codex-collab/workspace');
+  const env = { ...process.env, HOME: userHome, USERPROFILE: userHome, CODEX_COLLAB_HOME: join(userHome, 'ignored-legacy-home') };
   try {
     const first = await exec(process.execPath, [cli, 'setup', '--no-open', '--no-startup'], { env, timeout: 12000 });
     assert.match(first.stdout, /可以关闭终端和浏览器/);
@@ -103,18 +104,36 @@ test('default launcher exits while a private background workbench stays alive an
     const url = new URL(state.url); const response = await fetch(`${url.origin}/api/session`, { method: 'POST', headers: { Origin: url.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ token: url.hash.slice(1) }) });
     assert.equal(response.status, 200);
     const overview = await fetch(`${url.origin}/api/overview`, { headers: { Cookie: response.headers.get('set-cookie').split(';')[0] } }); assert.equal(overview.status, 200);
-    await exec(process.execPath, [cli, 'setup', '--no-open', '--no-startup'], { env, timeout: 12000 });
+    // Another checkout, legacy environment override and direct preview launcher
+    // must all see the same profiles and reuse the same service.
+    const profile = { id: '11111111-1111-1111-1111-111111111111', agent_id: 'fixture', repo: userHome, phase: 'removed' };
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(join(home, 'profiles', profile.id), { recursive: true });
+    await writeFile(join(home, 'profiles', profile.id, 'setup.json'), JSON.stringify(profile), { mode: 0o600 });
+    const stored = JSON.parse(await readFile(join(home, 'wizard.json'), 'utf8'));
+    stored.runtime.entry = '/another-install/apps/onboarding/main.mjs'; stored.runtime.node = '/another-node';
+    await writeFile(join(home, 'wizard.json'), JSON.stringify(stored), { mode: 0o600 });
+    await exec(process.execPath, [cli, 'setup', '--no-open', '--no-startup'], { cwd: userHome, env: { ...env, CODEX_COLLAB_HOME: join(userHome, 'another-ignored-home') }, timeout: 12000 });
+    const main = new URL('../main.mjs', import.meta.url).href;
+    await exec(process.execPath, ['--input-type=module', '-e', `const {runService}=await import(${JSON.stringify(main)}); if(await runService({home: ${JSON.stringify(join(userHome, 'preview'))}})) throw new Error('duplicate service');`], { env, timeout: 12000 });
+    await exec(process.execPath, [fileURLToPath(new URL('../main.mjs', import.meta.url)), '--home', join(userHome, 'legacy-service')], { env, timeout: 12000 });
     assert.equal(JSON.parse(await readFile(join(home, 'wizard.json'), 'utf8')).pid, pid);
+    const projects = await exec(process.execPath, [cli, 'projects'], { cwd: userHome, env });
+    assert.deepEqual(JSON.parse(projects.stdout), []);
+    const overviewAgain = await fetch(`${url.origin}/api/overview`, { headers: { Cookie: response.headers.get('set-cookie').split(';')[0] } });
+    assert.equal((await overviewAgain.json()).removed_profiles[0].id, profile.id);
+    for (const unused of ['ignored-legacy-home', 'another-ignored-home', 'preview', 'legacy-service']) await assert.rejects(stat(join(userHome, unused)), { code: 'ENOENT' });
     const status = await exec(process.execPath, [cli, 'service-status'], { env }); assert.equal(JSON.parse(status.stdout).online, true); assert.doesNotMatch(status.stdout, /#|token|http:/);
   } finally {
     if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} for (let i = 0; i < 50; i++) { try { await stat(join(home, 'wizard.json')); } catch { break; } await delay(100); } }
-    await rm(home, { recursive: true, force: true });
+    await rm(userHome, { recursive: true, force: true });
   }
 });
 
 test('setup replaces legacy and outdated workbenches, serializes concurrent launches and serves the full effect module graph', { timeout: 35000 }, async () => {
-  const home = await mkdtemp(join(tmpdir(), 'collab-service-upgrade-'));
-  const path = join(home, 'wizard.json'); const env = { ...process.env, CODEX_COLLAB_HOME: home }; let pid;
+  const userHome = await mkdtemp(join(tmpdir(), 'collab-service-upgrade-'));
+  const home = join(userHome, '.config/codex-collab/workspace');
+  const path = join(home, 'wizard.json'); const env = { ...process.env, HOME: userHome, USERPROFILE: userHome }; let pid;
   const launch = () => exec(process.execPath, [cli, 'setup', '--no-open', '--no-startup'], { env, timeout: 18000 });
   try {
     await launch(); let state = JSON.parse(await readFile(path, 'utf8')); pid = state.pid;
@@ -139,13 +158,14 @@ test('setup replaces legacy and outdated workbenches, serializes concurrent laun
     }
   } finally {
     if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} for (let i = 0; i < 50; i++) { try { await stat(path); } catch { break; } await delay(100); } }
-    await rm(home, { recursive: true, force: true });
+    await rm(userHome, { recursive: true, force: true });
   }
 });
 
 test('setup refuses to signal an outdated service when its private session cannot be authenticated', { timeout: 20000 }, async () => {
-  const home = await mkdtemp(join(tmpdir(), 'collab-service-identity-'));
-  const path = join(home, 'wizard.json'); const env = { ...process.env, CODEX_COLLAB_HOME: home }; let pid, original;
+  const userHome = await mkdtemp(join(tmpdir(), 'collab-service-identity-'));
+  const home = join(userHome, '.config/codex-collab/workspace');
+  const path = join(home, 'wizard.json'); const env = { ...process.env, HOME: userHome, USERPROFILE: userHome }; let pid, original;
   const launch = () => exec(process.execPath, [cli, 'setup', '--no-open', '--no-startup'], { env, timeout: 12000 });
   try {
     await launch(); original = await readFile(path, 'utf8');
@@ -158,7 +178,7 @@ test('setup refuses to signal an outdated service when its private session canno
   } finally {
     if (original) await writeFile(path, original, { mode: 0o600 });
     if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} for (let i = 0; i < 50; i++) { try { await stat(path); } catch { break; } await delay(100); } }
-    await rm(home, { recursive: true, force: true });
+    await rm(userHome, { recursive: true, force: true });
   }
 });
 

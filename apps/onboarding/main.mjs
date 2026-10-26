@@ -7,17 +7,18 @@ import { startSetupServer } from './server.mjs';
 import { SetupManager, savePrivate } from './manager.mjs';
 import { RunnerSupervisor } from './supervisor.mjs';
 import { workspaceHome } from './workspace.mjs';
+import { runtimeBuild } from './runtime-build.mjs';
 import { configureStartup, startupStatus } from './startup.mjs';
 import { alive, acquireRunnerControl } from '../peer/process.mjs';
 const entry = fileURLToPath(import.meta.url);
 const { version } = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
-const runtime = { version, entry, node: process.execPath };
-const sameRuntime = (state) => Object.entries(runtime).every(([key, value]) => state.runtime?.[key] === value);
+const runtime = { version, entry, node: process.execPath, build: await runtimeBuild(), storage: 'global-v1' };
+const sameRuntime = (state) => ['version', 'build', 'storage'].every((key) => state.runtime?.[key] === runtime[key]);
 function openBrowser(url) {
   const command = process.platform === 'darwin' ? ['open', url] : process.platform === 'win32' ? ['cmd', '/c', 'start', '', url] : ['xdg-open', url];
   const child = spawn(command[0], command.slice(1), { stdio: 'ignore' }); child.on('error', () => {}); child.unref();
 }
-export async function serviceState(home) {
+export async function serviceState(home = workspaceHome()) {
   for (let attempt = 0; attempt < 30; attempt++) {
     try { const state = JSON.parse(await readFile(join(home, 'wizard.json'), 'utf8')); return alive(state.pid) ? state : null; }
     catch (error) { if (error.code === 'ENOENT') return null; if (!(error instanceof SyntaxError)) throw error; }
@@ -25,8 +26,9 @@ export async function serviceState(home) {
   }
   throw new Error('本机工作台正在初始化，请稍后重试。');
 }
-export async function runService({ home = workspaceHome() } = {}) {
-  process.umask(0o077); home = resolve(home); await mkdir(home, { recursive: true, mode: 0o700 });
+export async function runService() {
+  const home = workspaceHome();
+  process.umask(0o077); await mkdir(home, { recursive: true, mode: 0o700 });
   const path = join(home, 'wizard.json'); let lock;
   for (let attempt = 0; attempt < 3; attempt++) {
     try { lock = await openFile(path, 'wx', 0o600); break; }
@@ -81,8 +83,8 @@ async function stopOutdatedService(home, state) {
   }
   throw new Error('旧版向导服务尚未退出，请稍后重新运行 codex-collab setup。');
 }
-export async function runLocalSetup({ open = true, home = workspaceHome(), cwd = process.cwd(), foreground = false, startup = true } = {}) {
-  home = resolve(home); await mkdir(home, { recursive: true, mode: 0o700 });
+export async function runLocalSetup({ open = true, cwd = process.cwd(), foreground = false, startup = true } = {}) {
+  const home = workspaceHome(); await mkdir(home, { recursive: true, mode: 0o700 });
   // Serialize launchers so two setup commands cannot both stop a service that
   // another launcher has just upgraded. Runner processes keep their own locks.
   const release = await acquireRunnerControl(join(home, 'launcher'), entry);
@@ -101,7 +103,7 @@ async function launchLocalSetup({ open, home, foreground, startup }) {
   }
   if (foreground) {
     if (state) { console.log(`本机工作台已运行：${state.url}`); if (open) openBrowser(state.url); return; }
-    const app = await runService({ home }); if (app) { console.log(`Codex Collab 工作台：${app.url}`); if (open) openBrowser(app.url); } return app;
+    const app = await runService(); if (app) { console.log(`Codex Collab 工作台：${app.url}`); if (open) openBrowser(app.url); } return app;
   }
   const previous = await startupStatus(home);
   let registered = startup ? previous : { enabled: false };
@@ -123,6 +125,7 @@ async function launchLocalSetup({ open, home, foreground, startup }) {
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const args = process.argv.slice(2);
-  if (args.length !== 2 || args[0] !== '--home') throw new Error('Internal service requires --home.');
-  runService({ home: args[1] }).catch(() => { console.error('Codex Collab 后台服务启动失败，请运行 codex-collab setup --foreground 排查。'); process.exitCode = 1; });
+  // Accept old launch-agent arguments, but never create a second data root.
+  if (args.length && (args.length !== 2 || args[0] !== '--home')) throw new Error('Invalid internal service arguments.');
+  runService().catch(() => { console.error('Codex Collab 后台服务启动失败，请运行 codex-collab setup --foreground 排查。'); process.exitCode = 1; });
 }
