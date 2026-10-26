@@ -266,7 +266,7 @@ test('resuming a ready own bot opens its saved profile without reconnecting veri
   assert.ok(!p.calls.includes('/api/discovery')); assert.equal(p.element('notice').textContent, '');
 });
 
-const resetPreview = (kind) => ({ id: 'member', kind, agent_id: 'bob', repo: '/fixture/bob', title: '重置', preview_token: 'preview', effects: ['fixture effect'], requires_pause: ['project', 'conversation'].includes(kind) });
+const resetPreview = (kind) => ({ id: 'member', kind, agent_id: 'bob', repo: '/fixture/bob', title: '重置', preview_token: 'preview', effects: ['fixture effect'], requires_pause: kind === 'conversation' });
 async function resetPage(extra) {
   return page((path, input) => {
     if (path === '/api/overview') return { profiles: [member('ready')] };
@@ -283,6 +283,16 @@ test('web reset previews effects before confirmation and requires exact name and
   p.element('reset-confirmation').value = 'wrong'; await p.submit('reset-form', {}); assert.match(p.element('notice').textContent, /Agent 名称/); assert.equal(received.length, 0);
   p.element('reset-confirmation').value = 'bob'; await p.submit('reset-form', {}); assert.match(p.element('notice').textContent, /暂停/); assert.equal(received.length, 0);
   p.element('reset-paused').checked = true; await p.submit('reset-form', {}); assert.equal(received.length, 1); assert.equal(received[0].preview_token, 'preview'); assert.equal(received[0].heartbeat_paused, true); assert.equal(p.element('profile').hidden, false);
+});
+
+test('web project removal is a simple preview-and-confirm flow with automatic backup notice', async () => {
+  const received = []; const p = await resetPage((path, input) => { if (path === '/api/reset') { received.push(input); return { id: 'member', kind: 'project', message: 'removed', backup_path: '/fixture/backup' }; } assert.fail(path); });
+  await openMember(p); await p.click('reset-project');
+  assert.equal(p.element('reset-pause-label').hidden, true); assert.equal(p.element('reset-confirmation-label').hidden, true);
+  assert.equal(p.element('reset-submit').textContent, '确认移除本机接入');
+  await p.submit('reset-form', {});
+  assert.equal(received.length, 1); assert.equal(received[0].confirmation, true); assert.equal(received[0].heartbeat_paused, false);
+  assert.match(p.element('notice').textContent, /本机恢复记录/);
 });
 
 test('web robot update clears Secret after discovery and saves only after verified group proof', async () => {

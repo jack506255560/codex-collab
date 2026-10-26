@@ -6,7 +6,7 @@ import { fixture, git } from './helpers.mjs';
 import { DesktopExecutor } from '../../peer/desktop.mjs';
 import { loadRuntime, readPeerConfig } from '../../peer/runtime.mjs';
 
-const confirm = (plan) => ({ id: plan.id, kind: plan.kind, preview_token: plan.preview_token, confirmation: plan.agent_id, heartbeat_paused: true });
+const confirm = (plan) => ({ id: plan.id, kind: plan.kind, preview_token: plan.preview_token, confirmation: plan.kind === 'project' ? true : plan.agent_id, heartbeat_paused: plan.requires_pause ? true : undefined });
 
 async function bound(f) {
   const admin = await f.admin(); const runtime = await loadRuntime(admin.config_path); const desktop = new DesktopExecutor(runtime.service, runtime.config);
@@ -88,13 +88,21 @@ test('removed clone can accept a different identity and restoration cannot overw
   } finally { await f.cleanup(); }
 });
 
-test('custom, tracked and symbolic linked project integrations are never overwritten', async () => {
+test('custom Skill is privately backed up on removal while tracked and symbolic linked integrations stay protected', async () => {
   const f = await fixture();
   try {
     const { admin } = await bound(f); const file = join(f.repos.alice, '.codex/config.toml'); const skill = join(f.repos.alice, '.agents/skills/team-collab-desktop/SKILL.md');
-    const toml = await readFile(file, 'utf8'); const template = await readFile(skill, 'utf8');
-    await writeFile(skill, template + '\ncustom'); await assert.rejects(f.manager.resetPreview({ id: admin.id, kind: 'project' }), /自定义/); assert.match(await readFile(skill, 'utf8'), /custom/);
-    await writeFile(skill, template); await writeFile(file, toml + '\n[mcp_servers.team-collab-alice.custom]\nfoo = "bar"\n'); await assert.rejects(f.manager.resetPreview({ id: admin.id, kind: 'project' }), /其他协作身份|嵌套/);
+    const toml = await readFile(file, 'utf8'); const template = await readFile(skill, 'utf8'); const customized = template + '\ncustom instructions';
+    await writeFile(skill, customized);
+    const plan = await f.manager.resetPreview({ id: admin.id, kind: 'project' });
+    assert.equal(plan.requires_pause, false); assert.match(plan.effects.join(' '), /自定义 Skill 自动保存/);
+    const result = await f.manager.reset(confirm(plan));
+    await assert.rejects(readFile(skill), { code: 'ENOENT' });
+    const backup = JSON.parse(await readFile(result.backup_path, 'utf8'));
+    assert.equal(backup.changes.find((change) => change.path.endsWith('/.agents/skills/team-collab-desktop/SKILL.md')).before, customized);
+    await f.manager.reset(confirm(await f.manager.resetPreview({ id: admin.id, kind: 'restore' })));
+    assert.equal(await readFile(skill, 'utf8'), customized);
+    await writeFile(file, toml + '\n[mcp_servers.team-collab-alice.custom]\nfoo = "bar"\n'); await assert.rejects(f.manager.resetPreview({ id: admin.id, kind: 'project' }), /其他协作身份|嵌套/);
     await writeFile(file, toml); git(f.repos.alice, 'add', '-f', '.codex/config.toml'); await assert.rejects(f.manager.resetPreview({ id: admin.id, kind: 'project' }), /Git/); git(f.repos.alice, 'reset', '--', '.codex/config.toml');
     const external = join(f.root, 'external.toml'); await writeFile(external, toml); await rm(file); await symlink(external, file);
     await assert.rejects(f.manager.resetPreview({ id: admin.id, kind: 'project' }), /符号链接/); assert.equal(await readFile(external, 'utf8'), toml);

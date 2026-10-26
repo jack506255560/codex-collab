@@ -520,9 +520,10 @@ async function openReset(id, kind) {
   $('reset-effects').replaceChildren(); for (const effect of plan.effects) $('reset-effects').append(text('li', effect));
   $('reset-thread').textContent = plan.thread_id ? `当前对话 ID：${plan.thread_id}` : '当前没有绑定的 Codex 对话。';
   $('reset-pause-label').hidden = !plan.requires_pause; $('reset-paused').checked = false;
+  $('reset-confirmation-label').hidden = kind === 'project'; $('reset-confirmation').required = kind !== 'project';
   $('reset-confirmation').value = ''; $('reset-confirmation').placeholder = plan.agent_id;
   $('reset-secret-fields').hidden = kind !== 'robot'; $('reset-secret').value = ''; $('reset-verification').hidden = true;
-  $('reset-submit').textContent = kind === 'restore' ? '确认恢复' : '确认操作'; show('reset-view');
+  $('reset-submit').textContent = kind === 'restore' ? '确认恢复' : kind === 'project' ? '确认移除本机接入' : '确认操作'; show('reset-view');
 }
 $('reset-conversation').onclick = () => action(() => openReset(currentId, 'conversation'));
 $('reset-robot').onclick = () => action(() => openReset(currentId, 'robot'));
@@ -543,9 +544,9 @@ $('reset-connect').onclick = () => action(async () => {
   } catch (error) { clearInterval(timer); notice(error.message); } }, 2000);
 });
 $('reset-form').onsubmit = (event) => { event.preventDefault(); action(async () => {
-  if ($('reset-confirmation').value !== resetPlan.agent_id) throw new Error('请填写当前 Agent 名称确认操作。');
+  if (resetPlan.kind !== 'project' && $('reset-confirmation').value !== resetPlan.agent_id) throw new Error('请填写当前 Agent 名称确认操作。');
   if (resetPlan.requires_pause && !$('reset-paused').checked) throw new Error('请先在原 Codex 对话暂停协作轮询，再勾选确认。');
-  const input = { id: resetPlan.id, kind: resetPlan.kind, preview_token: resetPlan.preview_token, confirmation: $('reset-confirmation').value, heartbeat_paused: $('reset-paused').checked };
+  const input = { id: resetPlan.id, kind: resetPlan.kind, preview_token: resetPlan.preview_token, confirmation: resetPlan.kind === 'project' ? true : $('reset-confirmation').value, heartbeat_paused: $('reset-paused').checked };
   if (resetPlan.kind === 'robot') {
     if (!resetDiscovery) throw new Error('请先验证新凭据。');
     const session = await api(`discovery?id=${resetDiscovery.id}`); resetConnection(session);

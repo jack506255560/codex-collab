@@ -101,9 +101,11 @@ export class ResetActions {
     }
     const skillEntries = await readdir(skillDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error));
     if (skillEntries.some((name) => name !== 'SKILL.md')) throw new SetupError('协作 Skill 目录包含自定义文件，请先手动处理。');
+    let customSkill = false;
     if (skill !== null) {
       const template = await readFile(join(root, 'packages/codex-kit/templates/.agents/skills/team-collab-desktop/SKILL.md'), 'utf8');
-      if (skill !== template && hash(skill) !== legacySkill) throw new SetupError('协作 Skill 已自定义，请先手动备份与移除。');
+      customSkill = skill !== template && hash(skill) !== legacySkill;
+      if (customSkill && kind === 'restore') throw new SetupError('项目中已有其他协作 Skill，恢复操作不会覆盖它；请先手动检查。');
     }
     const touched = [hasMcp ? '.codex/config.toml' : null, skill !== null ? '.agents/skills/team-collab-desktop' : null].filter(Boolean);
     if (touched.length && await git(repo, 'ls-files', '--', ...touched)) throw new SetupError('协作配置或 Skill 已提交到项目 Git，请先手动处理共享文件。');
@@ -111,7 +113,7 @@ export class ResetActions {
     const result = [];
     if (installed) { const next = before.replace(installed.section, ''); result.push({ path: configFile, before, after: next.trim() ? next : null }); }
     if (skill !== null) result.push({ path: skillFile, before: skill, after: null });
-    return { files: result, skillDir, configFile, skillFile, before, skill };
+    return { files: result, skillDir, configFile, skillFile, before, skill, customSkill };
   }
   async plan(context, kind, desktop) {
     const configs = await this.configs(context, { allowDisabled: kind === 'restore' });
@@ -141,11 +143,11 @@ export class ResetActions {
       const effects = {
         conversation: ['停止此机器人的本机连接；解除当前 Codex 对话绑定与轮询状态。', '保留机器人凭据和项目接入；在目标对话重新启用，然后启动机器人。'],
         robot: ['停止此机器人的本机连接；用新 Secret 在原协作群完成验证码验证。', '保持 Bot ID、群、本人身份和 Codex 对话绑定；保存后可重新启动连接。'],
-        project: ['停止此机器人的本机连接；解除对话绑定；移除本 clone 的协作 MCP 与生成的 Skill。', '项目代码、其他 MCP、模型配置、Git 历史和团队任务记录保留。', '本机身份、私有配置和任务 worktree 保留，可从“已移除的接入”恢复。'],
+        project: ['停止本机机器人连接并解除当前 Codex 对话绑定。', '移除本 clone 的协作 MCP 与 Skill；自定义 Skill 自动保存到本机恢复记录。', '项目代码、其他 MCP、模型配置、Git 历史、团队任务和其他电脑配置均保留，可从首页恢复本机接入。', 'Codex 聊天不会被删除；移除后，旧对话不再绑定这台电脑的协作接入。'],
         restore: ['恢复原成员身份与本 clone 的协作 MCP、Skill。', '机器人保持停止、对话保持未绑定；重新启用对话并启动连接。']
       }[kind];
       return { id, kind, title: kinds[kind], agent_id: context.state.agent_id, repo: context.state.repo, bot_id: context.config?.wecom?.bot_id || null,
-        thread_id: desktop.binding?.thread_id || null, preview_token: token, effects, requires_pause: ['conversation', 'project'].includes(kind) };
+        thread_id: desktop.binding?.thread_id || null, preview_token: token, effects, requires_pause: kind === 'conversation' };
     });
   }
   ticket(input, fingerprint) {
@@ -181,8 +183,10 @@ export class ResetActions {
   }
   async apply(input) {
     const context = await this.context(input.id, input.kind);
-    if (input.confirmation !== context.state.agent_id) throw new SetupError('请填写当前 Agent 名称确认操作。');
-    if (['conversation', 'project'].includes(input.kind) && input.heartbeat_paused !== true) throw new SetupError('请先在原 Codex 对话暂停协作轮询，再确认重置。');
+    if (input.kind === 'project') {
+      if (input.confirmation !== true) throw new SetupError('请再次确认移除本机接入。');
+    } else if (input.confirmation !== context.state.agent_id) throw new SetupError('请填写当前 Agent 名称确认操作。');
+    if (input.kind === 'conversation' && input.heartbeat_paused !== true) throw new SetupError('请先在原 Codex 对话暂停协作轮询，再确认重置。');
     return context.private.locked(async (desktop) => {
       const plan = await this.plan(context, input.kind, desktop); this.ticket(input, plan.fingerprint);
       let proof;
