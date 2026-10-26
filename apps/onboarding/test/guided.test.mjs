@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixture, git } from './helpers.mjs';
 import { cloneRepository, commandArgv, displayCommand, memberFields, recommendTests } from '../guided.mjs';
@@ -14,6 +15,11 @@ const bot = (name, extra = {}) => ({ display_name: name, responsibility: 'backen
 test('friendly member fields generate valid IDs and explicit responsibility presets', () => {
   assert.deepEqual(memberFields({ display_name: 'Alice Wu', responsibility: 'fullstack' }), { display_name: 'Alice Wu', agent_id: 'alice-wu', capabilities: ['frontend', 'backend'] });
   assert.match(memberFields({ display_name: '张三' }).agent_id, /^agent-[a-f0-9]{8}$/);
+  const automatic = { display_name: '协作助手 1', bot_id: 'fixture-bot-one' };
+  assert.match(memberFields(automatic).agent_id, /^agent-[a-f0-9]{12}$/);
+  assert.equal(memberFields(automatic).agent_id, memberFields({ ...automatic, bot_id: ' fixture-bot-one ' }).agent_id);
+  assert.notEqual(memberFields(automatic).agent_id, memberFields({ ...automatic, bot_id: 'fixture-bot-two' }).agent_id);
+  assert.equal(memberFields({ ...automatic, agent_id: 'my-id' }).agent_id, 'my-id');
   assert.deepEqual(memberFields({ agent_id: 'bob', capabilities: 'go,backend,go' }).capabilities, ['go', 'backend']);
   for (const invalid of [{ display_name: 3 }, { display_name: 'A', agent_id: {} }, { display_name: 'A', capabilities: [1] }, { display_name: 'A', responsibility: 'unknown' }]) assert.throws(() => memberFields(invalid), /名称|职责|文字/);
 });
@@ -36,6 +42,40 @@ test('project detection only suggests commands and never executes repository scr
     await assert.rejects(f.manager.prepareAdmin({ repo: f.repos.bob, ...bot('bob'), test_command: 'npm test && echo ok' }), /命令/);
     assert.equal(f.discovery.sessions.size, 0); assert.equal((await f.manager.overview()).drafts.length, 0);
   } finally { await f.cleanup(); }
+});
+
+test('command suggestions respect package managers and offer existing checks instead of the npm placeholder test', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'collab-checks-'));
+  try {
+    await writeFile(join(repo, 'pnpm-lock.yaml'), '');
+    await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1', lint: 'eslint .', build: 'vite build', dev: 'vite' } }));
+    const detected = await recommendTests(repo);
+    assert.deepEqual(detected.map((item) => item.command), ['pnpm run lint', 'pnpm run build']);
+    assert.equal(detected[0].source, 'package.json 的 scripts.lint'); assert.equal(detected[1].label, '构建检查');
+    for (const manager of ['npm', 'yarn', 'bun']) {
+      await writeFile(join(repo, 'package.json'), JSON.stringify({ packageManager: `${manager}@1.0.0`, scripts: { test: 'node --test', check: 'tsc --noEmit' } }));
+      assert.deepEqual((await recommendTests(repo)).map((item) => item.argv), [[manager, 'test'], [manager, 'run', 'check']]);
+    }
+    await writeFile(join(repo, 'package.json'), '{broken');
+    assert.deepEqual(await recommendTests(repo), []);
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});
+
+test('Python and Java suggestions require project configuration and prefer project wrappers', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'collab-checks-'));
+  try {
+    await writeFile(join(repo, 'pyproject.toml'), '[project]\nname = "fixture"\n');
+    assert.deepEqual(await recommendTests(repo), [], 'Python metadata alone does not imply pytest is available');
+    await writeFile(join(repo, 'pyproject.toml'), '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n');
+    await writeFile(join(repo, 'pom.xml'), '<project/>');
+    await writeFile(join(repo, 'build.gradle.kts'), '');
+    assert.deepEqual((await recommendTests(repo)).map((item) => item.command), ['mvn test', 'gradle test', 'python -m pytest']);
+    await writeFile(join(repo, 'mvnw'), 'this must not run');
+    await writeFile(join(repo, 'gradlew'), 'this must not run');
+    assert.deepEqual((await recommendTests(repo)).map((item) => item.command), ['./mvnw test', './gradlew test', 'python -m pytest']);
+    await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { build: 'vite build' } }));
+    assert.equal((await recommendTests(repo)).at(-1).command, 'npm run build', 'tests take priority over a build check');
+  } finally { await rm(repo, { recursive: true, force: true }); }
 });
 
 test('guided clone supports paths with spaces, resumes the same clone, and preserves unrelated folders', async () => {
@@ -101,6 +141,10 @@ test('batch invitations publish together, retain private delivery, and reject du
     const count = (await f.manager.detail(admin.id)).exports.length;
     await assert.rejects(f.manager.issueBatch({ id: admin.id, members: [bot('Dave'), bot('Bob')] }), /有效接入包/);
     assert.equal((await f.manager.detail(admin.id)).exports.length, count);
+    const first = await f.manager.issueBatch({ id: admin.id, members: [bot('协作助手 1', { bot_id: 'fixture-default-one' })] });
+    const afterReopen = await f.manager.issueBatch({ id: admin.id, members: [bot('协作助手 1', { bot_id: 'fixture-default-two' })] });
+    assert.notEqual(first.assignments[0].agent_id, afterReopen.assignments[0].agent_id);
+    assert.equal(first.assignments[0].display_name, afterReopen.assignments[0].display_name);
   } finally { await f.cleanup(); }
 });
 
@@ -163,5 +207,49 @@ test('project check reuses an existing local connection even offline without exp
     const state = await f.manager.state(admin.id); state.phase = 'removed'; await f.manager.save(state);
     git(f.repos.alice, 'remote', 'set-url', 'origin', f.remote);
     assert.equal((await f.manager.prepareProject({ repo: alias })).existing_profile, undefined);
+  } finally { await f.cleanup(); }
+});
+
+test('enrollment resolves a real check automatically and supports an explicit override', async () => {
+  const f = await fixture();
+  try {
+    const { projectVerification } = await import('../guided.mjs');
+    assert.equal(memberFields({}).display_name, '我的开发助手');
+    assert.deepEqual(await projectVerification(f.repos.alice), ['sh', 'test.sh']);
+    assert.deepEqual(await projectVerification(f.repos.alice, { test_mode: 'auto', test_command: 'stale command' }), ['sh', 'test.sh']);
+    assert.deepEqual(await projectVerification(f.repos.alice, { test_mode: 'custom', test_command: 'node checks.mjs' }), ['node', 'checks.mjs']);
+    assert.deepEqual(await projectVerification(f.repos.alice, { test_argv: ['npm', 'test'] }), ['npm', 'test']);
+    await assert.rejects(projectVerification(f.repos.alice, { test_mode: 'custom', test_command: '' }), /命令/);
+    await assert.rejects(projectVerification(f.repos.alice, { test_mode: 'other' }), /请选择/);
+    const session = await f.manager.prepareAdmin({ repo: f.repos.alice, bot_id: 'auto-bot', secret: 'fixture-only' });
+    const draft = await readPrivateJson(f.manager.draftPath(session.draft_id));
+    assert.deepEqual(draft.input.test_argv, ['sh', 'test.sh']);
+    assert.equal(draft.input.display_name, '我的开发助手');
+    await rm(join(f.repos.bob, 'test.sh'));
+    assert.deepEqual(await projectVerification(f.repos.bob), ['git', 'diff', '--check']);
+    const fallback = await f.manager.createAdmin({ repo: f.repos.bob, discovery_id: await f.verify({ bot_id: 'fallback-bot', secret: 'fixture-only' }) });
+    assert.deepEqual((await f.manager.state(fallback.id)).test_argv, ['git', 'diff', '--check']);
+  } finally { await f.cleanup(); }
+});
+
+test('project choices come from known repositories and the local picker lists paths without reading secrets', async () => {
+  const f = await fixture();
+  try {
+    const { localDefaults, browseLocal } = await import('../workspace.mjs');
+    const codexHome = join(f.root, 'codex'); await mkdir(codexHome);
+    await writeFile(join(codexHome, 'config.toml'), `[projects.${JSON.stringify(f.repos.bob)}]\ntrust_level = "trusted"\n`);
+    const defaults = await localDefaults(f.repos.alice, [f.repos.alice, join(f.root, 'missing')], { codexHome });
+    assert.deepEqual(defaults.projects, [await realpath(f.repos.alice), await realpath(f.repos.bob)]);
+    const overview = await f.manager.overview();
+    assert.ok(!JSON.stringify(overview).includes('fixture-secret'));
+    await writeFile(join(codexHome, 'peer.json'), '{"secret":"fixture-never-read"}');
+    const folders = await browseLocal({ path: f.root });
+    assert.ok(folders.entries.some((entry) => entry.name === 'codex' && entry.directory));
+    const files = await browseLocal({ path: codexHome, kind: 'config' });
+    assert.deepEqual(files.entries, [{ name: 'peer.json', path: join(await realpath(codexHome), 'peer.json'), directory: false }]);
+    assert.doesNotMatch(JSON.stringify(files), /fixture-never-read/);
+    await assert.rejects(browseLocal({ path: 'relative' }), /文件夹/);
+    await assert.rejects(browseLocal({ path: f.root, kind: 'all' }), /文件夹/);
+    await assert.rejects(browseLocal({ path: join(f.root, 'missing') }), /无法打开/);
   } finally { await f.cleanup(); }
 });

@@ -76,11 +76,13 @@ export class PeerRunner {
       }
       if (await git(worktree, 'status', '--porcelain')) throw new Error('worktree not clean');
       const commit = await git(worktree, 'rev-parse', 'HEAD'); if (commit === source) throw new Error('agent produced no code changes');
+      await git(worktree, 'diff', '--check', source, commit);
       await ensure(); await git(worktree, 'push', this.service.store.remoteName, `HEAD:refs/heads/${branch}`); await ensure();
       clearInterval(timer); await pulse; await ensure();
       const more = task.state.stage + 1 < task.spec.workflow.length;
       phase = 'protocol';
-      task = await this.service.report(id, { type: more ? 'handoff' : 'review_requested', summary: more ? `Stage ${task.state.stage + 1} (${task.spec.workflow[task.state.stage]}) completed and tested; continue the next configured stage from this commit.` : 'All configured stages completed; human review required.', refs: { branch, commit, tests: `${argv.join(' ')}: pass` } }, token);
+      const checks = argv.join(' ') === 'git diff --check' ? '基础改动检查：通过；未配置功能测试，需人工审核' : `${argv.join(' ')}: pass`;
+      task = await this.service.report(id, { type: more ? 'handoff' : 'review_requested', summary: more ? `Stage ${task.state.stage + 1} (${task.spec.workflow[task.state.stage]}) completed; configured checks passed; continue the next configured stage from this commit.` : 'All configured stages completed; human review required.', refs: { branch, commit, tests: checks } }, token);
       successful = true;
       try { await recordSession(task.events.at(-1).type); } catch { console.error('Peer private session metadata update failed'); }
       console.error(`Peer stage published: ${id}; agent=${this.service.agentId}; event=${task.events.at(-1).type}`);

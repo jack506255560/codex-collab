@@ -160,7 +160,7 @@
 </div>
 <div class="intro">
 <h1 tabindex="-1">从一个项目开始。</h1>
-<p>选好目录，下一步连接机器人。已接入的项目会直接打开原连接。</p>
+<p>选一个项目就能继续，分支和检查方式自动安排。已接入的项目会直接打开原连接。</p>
 </div>
 <div class="step-content">
 <label>项目来源<select id="admin-repo-mode" name="repo_mode">
@@ -168,17 +168,22 @@
 <option value="clone">从 Git 地址拉取新项目</option>
 </select>
 </label>
-<label id="admin-existing-repo">项目目录<input name="repo" id="admin-repo" placeholder="Git 仓库根目录的完整路径">
-</label>
+<label id="admin-project-choice-label" hidden>选择本机项目<select id="admin-project-choice"></select></label>
+<div id="admin-existing-repo"><label>项目目录<input name="repo" id="admin-repo" list="local-projects" placeholder="粘贴项目文件夹的完整路径"></label>
+<button id="browse-admin-repo" type="button" class="secondary">浏览文件夹…</button>
+</div>
+<p id="admin-repo-help" class="muted">优先使用当前项目，也可从列表选择。未列出的项目可选“其他项目”，再点“浏览文件夹”。</p>
+<datalist id="local-projects"></datalist>
 <div id="admin-clone-repo" hidden>
 <label>Git 仓库地址<input name="remote" id="admin-remote" placeholder="HTTPS 或 SSH 地址，不含 Token">
 </label>
-<label>保存到新目录（可选）<input name="destination" id="admin-destination" placeholder="留空按项目与名称生成独立目录">
-</label>
+<p class="muted">仓库页面的“Code / 克隆”中复制 HTTPS 或 SSH 地址。保存位置自动创建，不需要填路径。</p>
+<details><summary>更改保存位置（可选）</summary><label>保存到新目录<input name="destination" id="admin-destination" placeholder="留空自动创建独立目录">
+</label></details>
 </div>
-<p id="project-check-status" class="muted" role="status">会自动识别仓库、默认分支和验证命令。</p>
+<p id="project-check-status" class="muted" role="status">点击“继续”会自动识别仓库、默认分支和代码检查方式。</p>
 <details id="project-options">
-<summary>分支与验证方式</summary>
+<summary>分支设置</summary>
 <button id="check-project" type="button" class="secondary">重新检查项目</button>
 <p id="project-recommendation" class="muted">使用本机已有的 Git 登录，自动识别远程仓库和默认分支；无法确定时只需选择一次。</p>
 <div id="repository-options" hidden>
@@ -192,10 +197,17 @@
 </label>
 <p class="muted">同事和新增机器人会继承这个基准分支。每个新任务固定起始提交，后续分支更新不会改变已有任务。</p>
 </div>
-<label>验证命令<input id="test-command" name="test_command" required placeholder="例如 npm test、go test ./...、sh test.sh">
-</label>
-<p class="muted">请确认这个命令适合项目。工具使用固定程序和参数执行，不运行管道或拼接命令。</p>
 </details>
+<div class="verification-settings">
+<p id="test-command-status" class="help-note" role="status">检查方式已设为自动，不需要填写命令。</p>
+<details id="test-command-guide">
+<summary>检查方式：自动推荐（可选调整）</summary>
+<label>如何检查代码<select id="test-mode" name="test_mode"><option value="auto">帮我选择（推荐）</option><option value="custom">选择其他检查或填写命令</option></select></label>
+<p id="test-command-help" class="muted">优先使用项目已有测试，其次使用类型检查、代码规范或构建。没有现成脚本时使用基础改动检查；它不代表功能测试通过。接入时不会运行项目代码。</p>
+<div id="test-command-choices" class="command-choices" aria-label="项目检测到的检查命令" hidden></div>
+<label id="test-command-custom" hidden>自定义检查命令<input id="test-command" name="test_command" disabled placeholder="选择上方选项即可，也可填写已有命令" aria-describedby="test-command-help" autocomplete="off" spellcheck="false"></label>
+</details>
+</div>
 </div>
 </div>
 <div data-wizard-panel="1" hidden>
@@ -211,7 +223,7 @@
 </div>
 <div class="intro">
 <h1 tabindex="-1">连上你的企微机器人。</h1>
-<p>填写这两项，就可以继续了。</p>
+<p>只需从企微复制下面两项；名称和分工已经填好。</p>
 <p id="bot-project-context" class="muted"></p>
 </div>
 <div class="step-content">
@@ -221,14 +233,11 @@
 <label>机器人 Secret<input name="secret" type="password" required autocomplete="off">
 </label>
 </div>
+<p class="help-note">打开企业微信的智能机器人管理 → 创建或打开机器人 → 选择 API 模式 → 复制 Bot ID 和 Secret 到这里，再将机器人加入目标群。请勿填企业 ID、应用 ID 或 Webhook 地址；找不到入口时请联系企业微信管理员。</p>
 <details>
-<summary>机器人信息从哪里获取？</summary>
-<p>在企业微信中创建智能机器人，选择 API 模式，复制 Bot ID 和 Secret，并把机器人加入协作群。</p>
-</details>
-<details>
-<summary>名称与分工</summary>
+<summary>名称与分工（已自动填写，可修改）</summary>
 <div class="row">
-<label>你的显示名称<input name="display_name" required placeholder="例如 Alice 或张三" maxlength="80">
+<label>你的显示名称<input id="admin-display-name" name="display_name" value="我的开发助手" placeholder="留空使用我的开发助手" maxlength="80">
 </label>
 <label>主要职责<select name="responsibility">
 <option value="fullstack">全栈开发</option>
@@ -291,15 +300,13 @@
 <option value="existing">使用已有的独立 clone</option>
 </select>
 </label>
-<label id="own-clone-repo">新项目目录（可选）<input name="destination" placeholder="留空按项目和 Agent 名称创建">
-</label>
-<label id="own-existing-repo" hidden>另一个 clone 的本机目录<input name="repo" placeholder="同一业务仓库的另一个独立 clone">
-</label>
+<div id="own-clone-repo"><p class="help-note">会自动拉取同一个项目到独立目录，不改动原来的项目。保存位置无需填写。</p><details><summary>更改保存位置（可选）</summary><label>新项目目录<input name="destination" placeholder="留空自动创建"></label></details></div>
+<div id="own-existing-repo" hidden><label>选择另一个项目副本<input name="repo" list="local-projects" placeholder="从列表选择同一仓库的另一个目录"></label>
+<button id="browse-own-repo" type="button" class="secondary">浏览文件夹…</button>
+</div>
 <div class="row">
-<label>新的 Agent 名称<input name="agent_id" required pattern="[a-zA-Z0-9_\-]{1,64}" placeholder="bob">
-</label>
-<label>职责标签<input name="capabilities" required placeholder="backend">
-</label>
+<label>机器人显示名称<input name="display_name" value="我的第二个助手" maxlength="80" placeholder="留空自动命名，可使用中文"></label>
+<label>让它负责什么<select name="responsibility"><option value="general">通用助手（推荐，不确定就选这个）</option><option value="frontend">前端页面</option><option value="backend">后端服务</option><option value="fullstack">前后端开发</option><option value="testing">测试检查</option><option value="docs">文档整理</option></select></label>
 </div>
 </div>
 </div>
@@ -320,13 +327,14 @@
 </div>
 <div class="step-content">
 <div class="bot-fields">
+<p class="help-note">在企业微信的智能机器人管理中创建另一个 API 模式机器人，加入同一个群，再复制它的 Bot ID 和 Secret。不能复用原机器人的凭据。</p>
 <label>新机器人 Bot ID<input name="bot_id" required autocomplete="off">
 </label>
 <label>新机器人 Secret<input name="secret" type="password" required autocomplete="off">
 </label>
 </div>
 <label class="checkbox">
-<input name="prefer" type="checkbox" checked>该 Agent 为这些职责的首选执行者</label>
+<input name="prefer" type="checkbox" checked>同类任务优先交给这个机器人</label>
 </div>
 </div>
 <div class="step-actions">
@@ -364,9 +372,10 @@
 <p>选择同事发来的接入包，填入单独收到的密码。</p>
 </div>
 <div class="step-content">
-<label>接入包文件<input name="file" id="invite-file" type="file" accept=".json" required>
+<p class="help-note">请向邀请你的同事索取两样东西：① 以 .json 结尾的接入包文件；② 他单独发来的接入密码。这里不填企微 Secret，也不需要自己创建机器人。</p>
+<label>同事发来的接入包文件<input name="file" id="invite-file" type="file" accept=".json" required>
 </label>
-<label>接入包密码<input name="password" id="invite-password" type="password" required autocomplete="off">
+<label>同事单独发来的接入密码<input name="password" id="invite-password" type="password" required autocomplete="off">
 </label>
 <button id="inspect-invite" type="button" class="secondary">重新读取邀请</button>
 </div>
@@ -383,7 +392,7 @@
 </div>
 <div class="intro">
 <h1 tabindex="-1">是这个项目，对吗？</h1>
-<p>机器人和分工已带入，只需确认本机目录。</p>
+<p>机器人、分工和项目已带入，直接点“接入项目”即可；保存位置自动安排。</p>
 </div>
 <div class="step-content">
 <div id="invite-info" class="selected-project" hidden>
@@ -397,10 +406,10 @@
 <option value="existing">使用本机已有项目</option>
 </select>
 </label>
-<label id="join-clone-repo">新项目目录<input name="destination" placeholder="留空使用推荐目录，亦可填写完整路径">
-</label>
-<label id="join-existing-repo" hidden>已有项目目录<input name="repo" placeholder="Git 仓库根目录的完整路径">
-</label>
+<div id="join-clone-repo"><p id="join-destination-summary" class="help-note">自动创建独立项目目录。</p><details><summary>更改保存位置（可选）</summary><label>新项目目录<input name="destination" placeholder="留空使用推荐目录"></label></details></div>
+<div id="join-existing-repo" hidden><label>已有项目目录<input name="repo" list="local-projects" placeholder="从列表选择，或粘贴项目文件夹路径"></label>
+<button id="browse-join-repo" type="button" class="secondary">浏览文件夹…</button>
+</div>
 </div>
 </div>
 <div class="step-actions">
@@ -425,8 +434,11 @@
 </div>
 <p>先停止原 Runner。导入会保留原成员身份、任务和对话绑定，并重新启动机器人。旧团队由管理员先导入。</p>
 <form id="existing-form">
-<label>已有私有 peer.json 路径<input name="config_path" required placeholder="完整路径">
-</label>
+<label id="existing-config-choice-label" hidden>找到的原连接<select id="existing-config-choice"></select></label>
+<p id="existing-config-status" class="muted">会从已发现项目的协作设置中查找原配置；找到后直接选择即可。</p>
+<label id="existing-config-manual">原配置文件<input id="existing-config-path" name="config_path" required placeholder="选择上方连接，或粘贴原 peer.json 文件路径"></label>
+<button id="browse-existing-config" type="button" class="secondary">浏览原配置文件…</button>
+<p class="muted">没有找到？在原项目的 .codex/config.toml 中搜索 team-collab，args 里以 .json 结尾的路径就是原配置文件；不要上传或粘贴文件内容。也可返回首页打开已有连接。</p>
 <button type="submit">导入已有项目</button>
 </form>
 </section>
@@ -605,7 +617,7 @@
 <p class="muted">规则保存后用于新任务。现有任务继续使用创建时的规则。审核通知附带分支、提交、测试和可复制的群命令；企业微信原生 @ 的显示效果需要在实际群中确认。</p>
 </details>
 <h3>批量分配机器人给同事</h3>
-<p>每行分配一个独立机器人。同一个同事可以领取多行，分别绑定独立项目和对话。接入包密码自动生成。</p>
+<p>每行分配一个独立机器人，名称已填好，职责直接选择。Bot ID 和 Secret 从企微 API 模式机器人配置页复制；把机器人加入协作群。接入包、密码和内部身份自动生成。</p>
 <form id="batch-form">
 <div id="assignment-rows">
 </div>
@@ -643,10 +655,8 @@
 <summary>单独分配（兼容入口）</summary>
 <form id="issue-form">
 <div class="row">
-<label>Agent ID<input name="agent_id" required pattern="[a-zA-Z0-9_\-]{1,64}" placeholder="bob">
-</label>
-<label>职责标签<input name="capabilities" required placeholder="backend">
-</label>
+<label>显示名称<input name="display_name" value="协作助手" maxlength="80" placeholder="留空自动命名"></label>
+<label>主要职责<select name="responsibility"><option value="general">通用助手（推荐）</option><option value="frontend">前端页面</option><option value="backend">后端服务</option><option value="fullstack">前后端开发</option><option value="testing">测试检查</option><option value="docs">文档整理</option></select></label>
 </div>
 <div class="row">
 <label>机器人 Bot ID<input name="bot_id" required autocomplete="off">
@@ -707,6 +717,14 @@
 <p class="muted">操作前自动保存本机恢复记录。移除不会删除 Codex 聊天，只会解除它与这台电脑的协作绑定。私有恢复记录可能包含凭据，请勿分享。</p>
 </section>
 </main>
+<dialog id="local-picker" aria-labelledby="local-picker-title">
+<h2 id="local-picker-title">选择项目文件夹</h2>
+<p id="local-picker-path" class="repository-path"></p>
+<p id="local-picker-note" class="muted">点击文件夹打开，找到项目后点“选择这个文件夹”。</p>
+<button id="local-picker-up" type="button" class="secondary">↑ 上一级</button>
+<div id="local-picker-entries" class="local-picker-entries"></div>
+<div class="row"><button id="local-picker-select" type="button">选择这个文件夹</button><button id="local-picker-cancel" type="button" class="secondary">取消</button></div>
+</dialog>
 <footer class="demo-footer">
 <span>企业微信 · 本机协作</span>
 <div class="theme-picker" role="group" aria-label="页面配色">

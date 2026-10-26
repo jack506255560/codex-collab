@@ -1,5 +1,5 @@
 import { resolveRemote } from '../../packages/peer/repository.mjs';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, rmdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -13,9 +13,13 @@ export const responsibilities = {
 const idPattern = /^[a-zA-Z0-9_-]{1,64}$/;
 export function memberFields(input) {
   if (input.display_name != null && typeof input.display_name !== 'string' || input.agent_id != null && typeof input.agent_id !== 'string') throw new SetupError('成员名称和内部 Agent ID 应是文字。');
-  const displayName = (input.display_name || input.agent_id || '').trim();
+  const displayName = (input.display_name || input.agent_id || '我的开发助手').trim();
   if (!displayName || displayName.length > 80 || /[\x00-\x1f\x7f]/.test(displayName)) throw new SetupError('请填写成员或机器人名称，最多 80 个字符。');
-  const agentId = input.agent_id?.trim() || displayName.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || `agent-${randomBytes(4).toString('hex')}`;
+  const slug = displayName.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+  // Numbered Chinese defaults must not collide when the wizard is reopened.
+  const botId = typeof input.bot_id === 'string' ? input.bot_id.trim() : '';
+  const automaticId = !/[a-z]/.test(slug) && botId ? `agent-${createHash('sha256').update(botId).digest('hex').slice(0, 12)}` : slug;
+  const agentId = input.agent_id?.trim() || automaticId || `agent-${randomBytes(4).toString('hex')}`;
   if (!idPattern.test(agentId)) throw new SetupError('内部 Agent ID 请使用英文、数字、下划线或连字符。');
   const raw = input.capabilities || responsibilities[input.responsibility || 'general'];
   const caps = typeof raw === 'string' ? raw.split(/[\s,，]+/).filter(Boolean) : raw;
@@ -46,13 +50,46 @@ export function displayCommand(argv) {
 }
 export async function recommendTests(repo) {
   const files = new Set(await readdir(repo)); const commands = [];
-  if (files.has('test.sh')) commands.push(['sh', 'test.sh']);
+  const add = (argv, source, label = '测试') => commands.push({ argv, command: displayCommand(argv), source, label });
+  if (files.has('test.sh')) add(['sh', 'test.sh'], '项目根目录的 test.sh');
   if (files.has('package.json')) {
-    try { const value = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8')); if (typeof value.scripts?.test === 'string' && value.scripts.test.trim()) commands.push(['npm', 'test']); } catch { /* A suggestion never executes or repairs project files. */ }
+    try {
+      const value = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8'));
+      const manager = /^(npm|pnpm|yarn|bun)@/.exec(value.packageManager)?.[1]
+        || (files.has('pnpm-lock.yaml') ? 'pnpm' : files.has('yarn.lock') ? 'yarn' : files.has('bun.lock') || files.has('bun.lockb') ? 'bun' : 'npm');
+      for (const [name, label] of [['test', '测试'], ['check', '项目检查'], ['typecheck', '类型检查'], ['lint', '代码规范检查'], ['build', '构建检查']]) {
+        const script = value.scripts?.[name];
+        if (typeof script !== 'string' || !script.trim() || name === 'test' && /no test specified/i.test(script)) continue;
+        add(name === 'test' ? [manager, 'test'] : [manager, 'run', name], `package.json 的 scripts.${name}`, label);
+      }
+    } catch { /* A suggestion never executes or repairs project files. */ }
   }
-  if (files.has('go.mod')) commands.push(['go', 'test', './...']);
-  if (files.has('Cargo.toml')) commands.push(['cargo', 'test']);
-  return commands.map((argv) => ({ argv, command: displayCommand(argv) }));
+  if (files.has('go.mod')) add(['go', 'test', './...'], '项目根目录的 go.mod');
+  if (files.has('Cargo.toml')) add(['cargo', 'test'], '项目根目录的 Cargo.toml');
+  if (files.has('pom.xml')) add([files.has('mvnw') ? './mvnw' : 'mvn', 'test'], '项目根目录的 pom.xml');
+  if (files.has('build.gradle') || files.has('build.gradle.kts')) add([files.has('gradlew') ? './gradlew' : 'gradle', 'test'], '项目根目录的 Gradle 构建配置');
+  let pytestSource = ['pytest.ini', 'conftest.py'].find((file) => files.has(file));
+  for (const file of ['pyproject.toml', 'tox.ini', 'setup.cfg']) {
+    if (pytestSource || !files.has(file)) continue;
+    try {
+      if (/^\s*\[(?:tool\.pytest\.ini_options|pytest|tool:pytest)\]\s*$/m.test(await readFile(join(repo, file), 'utf8'))) pytestSource = file;
+    } catch { /* An unreadable optional config must not block other suggestions. */ }
+  }
+  if (pytestSource) add(['python', '-m', 'pytest'], `${pytestSource} 中的 pytest 配置`);
+  return [...commands.filter((item) => item.label === '测试'), ...commands.filter((item) => item.label !== '测试')];
+}
+// Resolve once at enrollment and share the same fixed check with every member.
+// A repository with no test entry can still enroll. This is a whitespace check,
+// NOT a substitute for functional tests; executors also check the committed diff.
+export async function projectVerification(repo, input = {}) {
+  if (input.test_mode != null && !['auto', 'custom'].includes(input.test_mode)) throw new SetupError('请选择自动检查或自定义检查。');
+  if (input.test_mode === 'custom' || input.test_mode !== 'auto' && input.test_command?.trim()) return commandArgv(input.test_command);
+  if (input.test_mode !== 'auto' && input.test_argv !== undefined) {
+    const argv = input.test_argv;
+    if (!Array.isArray(argv) || !argv.length || argv.length > 32 || argv.some((part) => typeof part !== 'string' || !part || part.length > 2000)) throw new SetupError('代码检查命令必须是非空字符串数组。');
+    return argv;
+  }
+  return (await recommendTests(repo))[0]?.argv || ['git', 'diff', '--check'];
 }
 export function suggestedRepo(remote, agentId) {
   if (typeof remote !== 'string' || !remote.trim()) throw new SetupError('请填写业务仓库地址。');

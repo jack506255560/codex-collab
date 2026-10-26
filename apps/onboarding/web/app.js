@@ -1,6 +1,9 @@
 const $ = (id) => document.getElementById(id);
 let currentId, pending, discovery, timer, busy = false, reviewVersion = null, reviewId, ownAdminId, resetPlan, resetDiscovery;
 let repositoryPolicy, currentProjectId, currentProject, projectSignature, ownReturnProject;
+let testRecommendations = [];
+let projectChecked = false, assignmentSequence = 0;
+let localPicker;
 let viewEpoch = 0, currentView = 'home', completing = false, deliveryTarget;
 const storageKey = 'codex-collab-onboarding';
 function remember(value) { try { if (value) sessionStorage.setItem(storageKey, JSON.stringify(value)); else sessionStorage.removeItem(storageKey); } catch {} }
@@ -51,7 +54,7 @@ async function advanceGuide(name) {
     if (name === 'join' && !await inspectInvite()) return false;
     if (name === 'admin') {
       const form = $('admin-form');
-      $('bot-project-context').textContent = `${form.elements.repo.value.split(/[\\/]/).filter(Boolean).at(-1)} · 验证：${$('test-command').value}`;
+      $('bot-project-context').textContent = `${form.elements.repo.value.split(/[\\/]/).filter(Boolean).at(-1)} · ${$('test-mode').value === 'custom' ? '自定义检查' : '检查方式自动安排'}`;
     }
     setGuide(name, 1); return false;
   }
@@ -91,7 +94,9 @@ async function overview() {
   const hasWork = !!((value.projects || []).length || (value.drafts || []).length || (!value.projects && (value.profiles || []).length));
   if (value.defaults) {
     if (!$('admin-form').elements.repo.value) $('admin-form').elements.repo.value = value.defaults.repo || '';
-    if (!$('admin-form').elements.display_name.value) $('admin-form').elements.display_name.value = value.defaults.display_name || '我的开发助手';
+    if (!$('admin-form').elements.display_name.value || $('admin-form').elements.display_name.value === '我的开发助手') $('admin-form').elements.display_name.value = value.defaults.display_name || '我的开发助手';
+    projectChoices(value.defaults);
+    configChoices(value.defaults.configs || []);
   }
   $('home-start-options').hidden = hasWork;
   $('home-actions').hidden = !hasWork;
@@ -384,9 +389,69 @@ for (const link of document.querySelectorAll('[data-view]')) link.onclick = (eve
     if (link.dataset.view === 'home') await overview();
   });
 };
+function projectChoices(defaults) {
+  const select = $('admin-project-choice'), list = $('local-projects'); select.replaceChildren(); list.replaceChildren();
+  const selected = $('admin-form').elements.repo.value;
+  const projects = [...new Set([selected, ...(defaults.projects || []), defaults.repo].filter(Boolean))];
+  for (const path of projects) {
+    const option = text('option', `${path.split(/[\\/]/).filter(Boolean).at(-1)} · ${path}`); option.value = path; select.append(option);
+    const suggestion = text('option', path); suggestion.value = path; list.append(suggestion);
+  }
+  const other = text('option', '其他项目：浏览选择文件夹'); other.value = ''; select.append(other); select.value = selected;
+  $('admin-project-choice-label').hidden = !projects.length;
+  repoMode('admin');
+}
+async function browseLocal(path) {
+  const value = await api('browse-local', { ...(path ? { path } : {}), kind: localPicker.kind });
+  localPicker.path = value.path; localPicker.parent = value.parent;
+  $('local-picker-path').textContent = value.path;
+  $('local-picker-entries').replaceChildren();
+  for (const entry of value.entries) {
+    $('local-picker-entries').append(button(`${entry.directory ? '📁' : '📄'} ${entry.name}`, () => entry.directory ? browseLocal(entry.path) : chooseLocal(entry.path)));
+  }
+  if (!value.entries.length) $('local-picker-entries').append(text('p', '这个文件夹中没有可选项目。'));
+  $('local-picker-up').disabled = value.path === value.parent;
+}
+async function openLocalPicker(kind, choose) {
+  localPicker = { kind, choose };
+  $('local-picker-title').textContent = kind === 'config' ? '选择原配置文件' : '选择项目文件夹';
+  $('local-picker-note').textContent = kind === 'config' ? '打开存放原配置的文件夹，再点击 peer.json 文件。只显示文件名，不会显示凭据。' : '点击文件夹名称打开，找到项目后点“选择这个文件夹”。';
+  $('local-picker-select').hidden = kind === 'config';
+  await browseLocal(); $('local-picker').showModal();
+}
+function chooseLocal(path) { localPicker.choose(path); $('local-picker').close(); localPicker = null; }
+$('local-picker-up').onclick = () => action(() => browseLocal(localPicker.parent));
+$('local-picker-select').onclick = () => action(async () => chooseLocal(localPicker.path));
+$('local-picker-cancel').onclick = () => { $('local-picker').close(); localPicker = null; };
+for (const prefix of ['admin', 'own', 'join']) $(`browse-${prefix}-repo`).onclick = () => action(() => openLocalPicker('directory', (path) => {
+  $(`${prefix}-form`).elements.repo.value = path;
+  if (prefix === 'admin') { $('admin-project-choice').value = ''; clearProjectSelection(); repoMode('admin'); }
+}));
+$('browse-existing-config').onclick = () => action(() => openLocalPicker('config', (path) => {
+  $('existing-config-choice').value = ''; $('existing-config-path').value = path; $('existing-config-manual').hidden = false;
+}));
+function configChoices(configs) {
+  const select = $('existing-config-choice'), path = $('existing-config-path'), previous = path.value; select.replaceChildren();
+  for (const config of configs) { const option = text('option', `${config.agent_id} · ${config.repo}`); option.value = config.config_path; select.append(option); }
+  const other = text('option', '其他配置：浏览选择文件'); other.value = ''; select.append(other);
+  select.value = previous && configs.some((item) => item.config_path === previous) ? previous : previous ? '' : configs[0]?.config_path || '';
+  if (!previous) path.value = select.value;
+  $('existing-config-choice-label').hidden = !configs.length;
+  $('existing-config-manual').hidden = !!select.value;
+  $('existing-config-status').textContent = configs.length ? '已找到原连接，选中后点击“导入已有项目”即可。' : '暂未找到可导入的原连接；已有接入请先查看首页项目列表。手动查找方法见下方。';
+}
+$('admin-project-choice').onchange = () => {
+  $('admin-form').elements.repo.value = $('admin-project-choice').value;
+  clearProjectSelection(); repoMode('admin');
+};
+$('existing-config-choice').onchange = () => {
+  $('existing-config-path').value = $('existing-config-choice').value;
+  $('existing-config-manual').hidden = !!$('existing-config-choice').value;
+};
 function repoMode(prefix) {
   const clone = $(`${prefix}-repo-mode`).value === 'clone';
-  $(`${prefix}-existing-repo`).hidden = clone; $(`${prefix}-clone-repo`).hidden = !clone;
+  $(`${prefix}-existing-repo`).hidden = clone || prefix === 'admin' && $('admin-project-choice').children.length >= 2 && !!$('admin-project-choice').value; $(`${prefix}-clone-repo`).hidden = !clone;
+  if (prefix === 'admin') { $('admin-project-choice-label').hidden = clone || $('admin-project-choice').children.length < 2; $('admin-repo-help').hidden = clone; }
   const fields = $(`${prefix}-form`).elements;
   if (fields.repo) fields.repo.required = !clone;
   if (prefix === 'admin' && fields.remote) fields.remote.required = clone;
@@ -397,8 +462,37 @@ for (const prefix of ['admin', 'join', 'own']) $(`${prefix}-repo-mode`).onchange
 };
 function clearProjectSelection() {
   $('admin-remote-name').value = ''; $('admin-base-branch').value = ''; $('repository-options').hidden = true;
-  $('project-recommendation').textContent = ''; $('project-check-status').textContent = '会自动识别仓库、默认分支和验证命令。';
+  $('project-recommendation').textContent = ''; $('project-check-status').textContent = '点击“继续”会自动识别仓库、默认分支和代码检查方式。';
+  testRecommendations = []; projectChecked = false; $('test-mode').value = 'auto'; $('test-command').value = '';
+  $('test-command-choices').replaceChildren(); $('test-command-choices').hidden = true;
+  $('test-command-guide').open = false; verificationMode();
 }
+function verificationMode() {
+  const custom = $('test-mode').value === 'custom';
+  $('test-command-custom').hidden = !custom; $('test-command').disabled = !custom; $('test-command').required = custom;
+  $('test-command-status').textContent = custom ? '将使用你选择的检查方式。' : !projectChecked
+    ? '检查方式：自动选择，无需填写命令，直接继续。' : testRecommendations.length
+    ? `已自动选择：${testRecommendations[0].label || '项目检查'}（${testRecommendations[0].command}）。直接继续即可。`
+    : '检查方式自动安排。没有测试脚本时先做基础改动检查，可以直接继续；功能仍需人工审核。';
+  if (!custom) $('test-command').value = testRecommendations[0]?.command || '';
+}
+function selectTestCommand(command) {
+  $('test-mode').value = 'custom'; verificationMode(); $('test-command').value = command;
+  for (const choice of $('test-command-choices').children) choice.setAttribute('aria-pressed', String(choice.dataset.command === command));
+}
+function showTestCommands(tests = []) {
+  testRecommendations = tests; projectChecked = true;
+  const choices = $('test-command-choices'); choices.replaceChildren(); choices.hidden = !tests.length;
+  verificationMode();
+  for (const test of tests) {
+    const choice = text('button', ''); choice.type = 'button'; choice.className = 'command-choice'; choice.dataset.command = test.command;
+    choice.setAttribute('aria-pressed', String($('test-command').value === test.command));
+    choice.append(text('strong', test.label || '项目检查'), text('code', test.command), text('span', test.source || '项目已有检查入口'));
+    choice.onclick = () => selectTestCommand(test.command); choices.append(choice);
+  }
+}
+$('test-mode').onchange = () => { verificationMode(); for (const choice of $('test-command-choices').children) choice.setAttribute('aria-pressed', String(choice.dataset.command === $('test-command').value)); };
+$('test-command').oninput = () => selectTestCommand($('test-command').value);
 async function checkProject() {
   const snapshot = values($('admin-form'));
   const selected = await api('project-check', snapshot);
@@ -421,10 +515,10 @@ async function checkProject() {
     for (const value of options) { const option = text('option', value); option.value = value; select.append(option); }
     select.value = chosen || '';
   }
-  $('project-recommendation').textContent = selected.selection_required ? '请在下方选择协作远程或业务基准分支，再继续。' : `项目已检查：${selected.repo}。基准：${selected.remote_name}/${selected.base_branch}。${selected.tests.length ? '推荐：' + selected.tests.map((test) => test.command).join(' / ') + '，请确认或修改。' : '未找到常见测试入口，请填写适合项目的验证命令。'}`;
-  if (!$('test-command').value && selected.tests.length) $('test-command').value = selected.tests[0].command;
-  $('project-check-status').textContent = selected.selection_required ? '需要你确认一下分支设置。' : `已识别 ${selected.remote_name}/${selected.base_branch}${$('test-command').value ? ` · 验证：${$('test-command').value}` : ''}`;
-  if (selected.selection_required || !$('test-command').value) $('project-options').open = true;
+  $('project-recommendation').textContent = selected.selection_required ? '请在下方选择协作远程或业务基准分支，再继续。' : `项目已检查：${selected.repo}。基准：${selected.remote_name}/${selected.base_branch}。`;
+  showTestCommands(selected.tests);
+  $('project-check-status').textContent = selected.selection_required ? '需要你确认一下分支设置。' : `已识别 ${selected.remote_name}/${selected.base_branch}，检查方式已自动安排，可直接继续。`;
+  if (selected.selection_required) $('project-options').open = true;
   return selected;
 }
 $('load-repository-settings').onclick = () => action(async () => {
@@ -461,7 +555,10 @@ async function inspectInvite() {
   if ($('join-form').elements.password.value !== input.password || $('join-form').elements.file.files?.[0] !== file) return;
   $('invite-info').hidden = false; $('invite-summary').textContent = `${value.display_name || value.agent_id}（${value.agent_id}）· 职责：${value.capabilities.join('、')}${value.team_name ? ' · ' + value.team_name : ''}`;
   $('invite-remote').textContent = `${value.remote}${value.base_branch ? ` · 基准分支：${value.base_branch}（自动继承）` : ''}`;
-  if (!$('join-form').elements.destination.value) $('join-form').elements.destination.value = value.suggested_repo;
+  // Keep an explicit user override, but recompute the default for each invitation.
+  const destination = $('join-form').elements.destination;
+  if (!destination.value || destination.value === destination.dataset?.suggested) { destination.value = value.suggested_repo; if (destination.dataset) destination.dataset.suggested = value.suggested_repo; }
+  $('join-destination-summary').textContent = `自动保存到：${destination.value || value.suggested_repo}`;
   return value;
 }
 $('inspect-invite').onclick = () => action(inspectInvite);
@@ -560,13 +657,13 @@ $('reset-form').onsubmit = (event) => { event.preventDefault(); action(async () 
 
 function assignmentRow() {
   const card = document.createElement('fieldset'); card.className = 'assignment'; card.append(text('legend', '成员／机器人'));
-  const field = (label, name, { type = 'text', placeholder = '', required = false } = {}) => {
-    const wrapper = text('label', label), input = document.createElement('input'); input.name = name; input.dataset.field = name; input.type = type; input.placeholder = placeholder; input.required = required; input.autocomplete = 'off'; wrapper.append(input); return wrapper;
+  const field = (label, name, { type = 'text', placeholder = '', required = false, value = '' } = {}) => {
+    const wrapper = text('label', label), input = document.createElement('input'); input.name = name; input.dataset.field = name; input.type = type; input.placeholder = placeholder; input.required = required; input.autocomplete = 'off'; input.value = value; wrapper.append(input); return wrapper;
   };
   const row = document.createElement('div'); row.className = 'row';
   const roleLabel = text('label', '职责'), role = document.createElement('select'); role.dataset.field = 'responsibility';
   for (const [value, label] of [['frontend', '前端开发'], ['backend', '后端开发'], ['fullstack', '全栈开发'], ['testing', '测试'], ['docs', '文档'], ['general', '通用开发']]) { const option = text('option', label); option.value = value; role.append(option); }
-  role.value = 'backend'; roleLabel.append(role); row.append(field('显示名称', 'display_name', { required: true, placeholder: '例如 Bob 或李四' }), roleLabel); card.append(row);
+  role.value = 'general'; roleLabel.append(role); row.append(field('显示名称', 'display_name', { value: `协作助手 ${++assignmentSequence}`, placeholder: '留空自动命名，可使用中文' }), roleLabel); card.append(row);
   const bots = document.createElement('div'); bots.className = 'row'; bots.append(field('Bot ID', 'bot_id', { required: true }), field('Secret', 'secret', { type: 'password', required: true })); card.append(bots);
   const advanced = document.createElement('details'); advanced.append(text('summary', '自定义身份与分工'), field('内部 Agent ID（可选）', 'agent_id'), field('自定义职责（可选）', 'capabilities'));
   for (const [name, label] of [['prefer', '作为这些职责的首选'], ['commands_enabled', '允许所有者通过此机器人发送群命令']]) { const wrapper = text('label', label), input = document.createElement('input'); input.type = 'checkbox'; input.dataset.field = name; input.checked = true; wrapper.className = 'checkbox'; wrapper.prepend(input); advanced.append(wrapper); }
@@ -637,6 +734,7 @@ function initializeAppearance() {
   apply(theme);
   for (const choice of document.querySelectorAll('[data-theme-choice]')) choice.onclick = () => apply(choice.dataset.themeChoice);
   for (const name of Object.keys(guideStep)) repoMode(name);
+  verificationMode();
 }
 initializeAppearance();
 assignmentRow();

@@ -472,3 +472,23 @@ test('multiple pending reviews require a human selection and preserve the number
     assert.deepEqual(result.request.spec.review_context.map((task) => task.task_id), [first.spec.id, second.spec.id].sort());
   } finally { await f.cleanup(); }
 });
+
+test('basic verification checks committed changes and never reports functional tests as passed', async () => {
+  const f = await fixture();
+  try {
+    await bind(f); const alice = f.peers.alice;
+    alice.config.test_argv = ['git', 'diff', '--check'];
+    const task = await create(f, 'basic-check', ['frontend']);
+    const poll = await alice.desktop.poll(threads.alice);
+    await commit(poll.job, 'notes.md', 'A small documented change.\n');
+    const result = await alice.desktop.finish(threads.alice, task.spec.id, 'Documentation updated.');
+    assert.match(result.events.at(-1).refs.tests, /基础改动检查：通过.*未配置功能测试/);
+    const bad = await create(f, 'basic-bad-whitespace', ['frontend']);
+    const next = await alice.desktop.poll(threads.alice);
+    await commit(next.job, 'notes.md', 'Trailing whitespace must fail.  \n');
+    assert.equal(git(next.job.worktree, 'status', '--porcelain'), '', 'the committed change has a clean worktree');
+    await assert.rejects(alice.desktop.finish(threads.alice, bad.spec.id, 'Should fail.'), /verification failed/);
+    const failed = await alice.service.read(bad.spec.id);
+    assert.equal(failed.events.at(-1).type, 'run_failed');
+  } finally { await f.cleanup(); }
+});

@@ -185,6 +185,7 @@ export class DesktopExecutor {
       try {
         const argv = this.config.test_argv || ['sh', 'test.sh'];
         try {
+          await git(job.worktree, 'diff', '--check', job.source_commit, commit);
           await exec(argv[0], argv.slice(1), { cwd: job.worktree, env: { PATH: process.env.PATH, HOME: job.worktree, LANG: process.env.LANG || 'C', TMPDIR: process.env.TMPDIR }, timeout: 120000, maxBuffer: 1000000, signal: controller.signal });
           if (await git(job.worktree, 'status', '--porcelain') || await git(job.worktree, 'rev-parse', 'HEAD') !== commit || await git(job.worktree, 'branch', '--show-current') !== job.branch) throw new Error('tests changed code or branch');
         } catch {
@@ -201,7 +202,8 @@ export class DesktopExecutor {
         clearInterval(timer); await pulse;
         const more = task.state.stage + 1 < task.spec.workflow.length;
         const type = more ? 'handoff' : 'review_requested';
-        const result = await this.service.report(taskId, { type, summary, refs: { branch: job.branch, commit, tests: `${argv.join(' ')}: pass` } }, job.token, `desktop-finish:${taskId}:${job.token.epoch}`);
+        const checks = argv.join(' ') === 'git diff --check' ? '基础改动检查：通过；未配置功能测试，需人工审核' : `${argv.join(' ')}: pass`;
+        const result = await this.service.report(taskId, { type, summary, refs: { branch: job.branch, commit, tests: checks } }, job.token, `desktop-finish:${taskId}:${job.token.epoch}`);
         job.status = result.events.at(-1).type; job.commit = commit; job.finished_at = new Date().toISOString(); await this.private.write(state);
         return result;
       } finally { clearInterval(timer); await pulse; }

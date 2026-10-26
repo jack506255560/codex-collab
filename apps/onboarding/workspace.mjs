@@ -1,15 +1,34 @@
 import { homedir, userInfo } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { readFile, readdir, realpath } from 'node:fs/promises';
 import { git } from '../../packages/peer/store.mjs';
+import { SetupError } from './errors.mjs';
 
 // One persistent workspace per OS user, shared by npm, source and login services.
 // Working directories and the legacy CODEX_COLLAB_HOME must not fork real profiles.
 export const workspaceHome = () => resolve(join(homedir(), '.config/codex-collab/workspace'));
-export async function localDefaults(cwd = process.cwd()) {
+export async function browseLocal({ path = homedir(), kind = 'directory' } = {}) {
+  if (typeof path !== 'string' || !isAbsolute(path) || !['directory', 'config'].includes(kind)) throw new SetupError('请选择本机文件夹。');
+  try {
+    const current = await realpath(path), entries = await readdir(current, { withFileTypes: true });
+    const items = entries.filter((entry) => entry.isDirectory() && !['.git', 'node_modules', '.Trash'].includes(entry.name) || kind === 'config' && entry.isFile() && entry.name.endsWith('.json'))
+      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name, 'zh-CN'));
+    return { path: current, parent: resolve(current, '..'), entries: items.map((entry) => ({ name: entry.name, path: join(current, entry.name), directory: entry.isDirectory() })) };
+  } catch { throw new SetupError('无法打开这个文件夹，请返回上一级，或选择有访问权限的文件夹。'); }
+}
+export async function localDefaults(cwd = process.cwd(), knownRepos = [], { codexHome = join(homedir(), '.codex') } = {}) {
   let repo = '';
   try { repo = await git(cwd, 'rev-parse', '--show-toplevel'); } catch { /* Opening outside a project is supported. */ }
-  return { repo, display_name: userInfo().username };
+  // Only inspect explicitly known projects, not arbitrary folders on the disk.
+  const candidates = [repo, ...knownRepos];
+  const config = await readFile(join(codexHome, 'config.toml'), 'utf8').catch(() => '');
+  for (const match of config.matchAll(/^\s*\[projects\.("(?:[^"\\]|\\.)*")\]\s*$/gm)) {
+    try { const path = JSON.parse(match[1]); if (isAbsolute(path)) candidates.push(path); } catch { /* Ignore unsupported TOML spellings. */ }
+  }
+  const projects = [...new Set((await Promise.all([...new Set(candidates.filter(Boolean))].slice(0, 40).map(async (path) => {
+    try { return await git(path, 'rev-parse', '--show-toplevel'); } catch { return null; }
+  }))).filter(Boolean))];
+  return { repo, display_name: userInfo().username, projects };
 }
 export async function profiles(home = workspaceHome()) {
   const root = join(home, 'profiles'); const result = [];

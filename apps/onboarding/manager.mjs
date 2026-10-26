@@ -11,6 +11,7 @@ import { readRunnerIntent, writeRunnerIntent } from '../peer/intent.mjs';
 import { localDefaults, workspaceHome } from './workspace.mjs';
 import { startupStatus } from './startup.mjs';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 import { canonical, digest, generateIdentity, readPrivateJson, validateTeam } from '../../packages/peer/config.mjs';
 import { PeerGitStore, git } from '../../packages/peer/store.mjs';
 import { approveEnrollment, enrollmentRequest, invitationFile, invitationRecord, policyVersion, recordHash, registryPath, requestFile, validateEnrollment, validateHistory, validateInvitation, versionFile, readRegistry } from '../../packages/peer/registry.mjs';
@@ -23,7 +24,7 @@ import { alive, readRunnerLock } from '../peer/process.mjs';
 import { BotDiscovery } from './discovery.mjs';
 import { ResetActions } from './reset.mjs';
 import { encryptBundle, decryptBundle, remoteIdentity } from './bundle.mjs';
-import { cloneRepository, commandArgv, memberFields, recommendTests, suggestedRepo } from './guided.mjs';
+import { cloneRepository, memberFields, projectVerification, recommendTests, suggestedRepo } from './guided.mjs';
 const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
 const idPattern = /^[a-zA-Z0-9_-]{1,64}$/;
 const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -144,7 +145,19 @@ export class SetupManager {
       if (!draft.profile_id) drafts.push({ id: draft.id, agent_id: draft.input.agent_id, display_name: draft.input.display_name, repo: draft.input.repo });
     }
     let context = {}; try { context = await readPrivateJson(join(this.home, 'context.json')); } catch {}
-    return { projects: groupProjects(states), profiles, removed_profiles, drafts, defaults: await localDefaults(context.cwd || this.home), startup: await startupStatus(this.home) };
+    const defaults = await localDefaults(context.cwd || this.home, states.map((state) => state.repo), { codexHome: this.home === workspaceHome() ? process.env.CODEX_HOME || join(homedir(), '.codex') : join(this.home, 'codex') });
+    const configs = [];
+    for (const repo of defaults.projects) {
+      const toml = await readFile(join(repo, '.codex/config.toml'), 'utf8').catch(() => '');
+      for (const match of toml.matchAll(/"((?:[^"\\]|\\.)*\.json)"/g)) {
+        try {
+          const configPath = JSON.parse(match[0]); const { config } = await readPeerConfig(configPath);
+          if (config.execution_mode !== 'desktop_poll' || await realpath(config.repo) !== repo || configs.some((item) => item.config_path === configPath)) continue;
+          configs.push({ config_path: configPath, repo, agent_id: config.agent_id });
+        } catch { /* An unavailable legacy config must not block the wizard. */ }
+      }
+    }
+    return { projects: groupProjects(states), profiles, removed_profiles, drafts, defaults: { ...defaults, configs }, startup: await startupStatus(this.home) };
   }
   async checkBotAvailable(botId) {
     for (const profile of (await this.overview()).profiles) {
@@ -192,10 +205,10 @@ export class SetupManager {
     const fields = memberFields(input);
     if (typeof input.bot_id !== 'string' || !input.bot_id.trim() || typeof input.secret !== 'string' || !input.secret.trim()) throw new SetupError('请填写机器人 Bot ID 和 Secret。');
     if (input.team_name != null && (typeof input.team_name !== 'string' || input.team_name.length > 80 || /[\x00-\x1f\x7f]/.test(input.team_name))) throw new SetupError('团队名称最多 80 个字符。');
-    const argv = input.test_command ? commandArgv(input.test_command) : testArgv(input.test_argv);
     const selected = await this.prepareProject(input);
     if (selected.existing_profile) throw new SetupError('这个项目已经接入，请打开现有机器人继续绑定；增加机器人请从项目页操作，并使用独立 clone。');
     if (selected.selection_required) throw new SetupError('请先检查项目并选择协作远程和业务基准分支。');
+    const argv = await projectVerification(selected.repo, input);
     const draft = { id: randomUUID(), input: { ...fields, repo: selected.repo, remote_name: selected.remote_name, remote_url: selected.remote, base_branch: selected.base_branch, test_argv: argv, team_name: input.team_name?.trim() || null,
       bot_id: input.bot_id, secret: input.secret } };
     await savePrivate(this.draftPath(draft.id), draft);
@@ -227,8 +240,9 @@ export class SetupManager {
   }
   async createAdmin(input, { onSaved } = {}) {
     const fields = memberFields(input), agentId = fields.agent_id;
-    const caps = fields.capabilities; const argv = input.test_command ? commandArgv(input.test_command) : testArgv(input.test_argv || ['sh', 'test.sh']);
+    const caps = fields.capabilities;
     const { repo, remote, remote_name, base_branch } = await ensureRepo(input.repo, { remoteName: input.remote_name, expectedRemote: input.remote_url, baseBranch: input.base_branch });
+    const argv = await projectVerification(repo, input);
     if (inside(repo, this.home)) throw new SetupError('本机配置目录必须在业务仓库之外。');
     for (const profile of (await this.overview()).profiles) if (profile.repo === repo) throw new SetupError('这个 clone 已接入其他身份，请选择独立 clone。');
     const proof = this.discovery.consume(input.discovery_id);
@@ -583,6 +597,7 @@ export class SetupManager {
         prefer: input.prefer !== false, claim_public_key: claim.public_key, expires_at: new Date(Date.now() + 7 * 86400000).toISOString(),
         ...(ownRepo ? { owner_userid: ownerUserid } : {}) }, history.latest, state.agent_id, identity.private_key);
       const value = { schema_version: 1, kind: 'codex-collab-invite', root_hash: state.root_hash, remote: state.remote,
+        display_name: input.display_name || agentId, team_name: state.team_name || null,
         history: history.records, invitation, claim_private_key: claim.private_key,
         wecom: { bot_id: invitation.bot_id, secret: input.secret }, test_argv: state.test_argv };
       // Save export before push: a lost acknowledgment can be retried from disk.
@@ -629,7 +644,11 @@ export class SetupManager {
   async createOwnAgent(input) {
     const state = await this.state(input.id);
     if (state.role !== 'admin' || state.phase !== 'ready') throw new SetupError('请从已接入的管理员项目添加自己的机器人。');
-    if (!idPattern.test(input.agent_id?.trim() || '')) throw new SetupError('请填写新 Agent 名称。');
+    if (typeof input.bot_id !== 'string' || !input.bot_id.trim() || typeof input.secret !== 'string' || !input.secret.trim()) throw new SetupError('请填写新机器人的 Bot ID 和 Secret。');
+    // Use a stable, bot-derived default so retrying a Chinese display name does
+    // not create a second identity or clone. Explicit legacy IDs still work.
+    const fields = memberFields({ ...input, display_name: input.display_name || input.agent_id || '我的第二个助手', agent_id: input.agent_id || `agent-${digest(input.bot_id.trim()).slice(0, 12)}` });
+    input = { ...input, ...fields };
     const repo = input.repo_mode === 'clone' ? await cloneRepository({ remote: state.remote, destination: input.destination || suggestedRepo(state.remote, input.agent_id.trim()), privateHome: this.home }) : input.repo;
     const team = (await this.profileStore(state)).team;
     const selected = await ensureRepo(repo, { expectedRemote: state.remote, baseBranch: teamBaseBranch(team) });

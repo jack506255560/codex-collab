@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile, stat, readdir } from 'node:fs/promises';
+import { readFile, writeFile, stat, readdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fixture, git } from './helpers.mjs';
@@ -197,5 +197,22 @@ test('own agent resumes a persisted enrollment after automatic approval is inter
     const resumed = await f.manager.state(own.id); assert.equal(resumed.request.request_id, persisted.request.request_id);
     const dashboard = await f.manager.detail(admin.id); assert.equal(dashboard.version, 2); assert.equal(dashboard.requests.length, 0);
     assert.equal((await f.manager.resume(own.id)).phase, 'ready'); assert.equal((await f.manager.detail(admin.id)).version, 2);
+  } finally { await f.cleanup(); }
+});
+
+test('adding an own robot accepts a Chinese name and role choice with a stable generated identity', async () => {
+  const f = await fixture();
+  try {
+    const admin = await f.admin();
+    const input = { id: admin.id, repo: f.repos.bob, display_name: '我的页面助手', responsibility: 'frontend', bot_id: 'friendly-bot', secret: 'fixture-only' };
+    const own = await f.manager.createOwnAgent(input);
+    assert.match(own.agent_id, /^agent-[a-f0-9]{12}$/);
+    assert.equal(own.display_name, '我的页面助手');
+    assert.deepEqual((await f.manager.state(own.id)).bundle.invitation.capabilities, ['frontend']);
+    assert.equal((await f.manager.createOwnAgent(input)).id, own.id, 'retry reuses its identity and invitation');
+    const overview = await f.manager.overview();
+    assert.ok(overview.defaults.projects.includes(await realpath(f.repos.alice)));
+    assert.ok(overview.defaults.configs.some((config) => config.config_path === admin.config_path));
+    assert.doesNotMatch(JSON.stringify(overview), /fixture-only|fixture-secret/);
   } finally { await f.cleanup(); }
 });

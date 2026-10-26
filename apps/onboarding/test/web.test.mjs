@@ -17,7 +17,7 @@ class Element {
   querySelector(selector) { return this.querySelectorAll('*').find((child) => selector === `[data-field="${child.dataset.field}"]`); }
 }
 async function page(route, storage = new Map(), { href = 'http://localhost/', appearance = false, themeStorage = new Map() } = {}) {
-  const ids = new Map(), calls = [], timers = new Map(); let timerId = 0;
+  const ids = new Map(), calls = [], copied = [], timers = new Map(); let timerId = 0;
   const element = (id) => { if (!ids.has(id)) ids.set(id, new Element(id)); return ids.get(id); };
   const sections = ['home', 'personal', 'project', 'admin', 'join', 'own', 'existing', 'verification', 'profile', 'reset-view'].map(element);
   const html = await readFile(new URL('../web/index.html', import.meta.url), 'utf8');
@@ -36,7 +36,7 @@ async function page(route, storage = new Map(), { href = 'http://localhost/', ap
       return { ok: !(value instanceof Error), json: async () => value instanceof Error ? { error: value.message } : value };
     },
     location: { hash: '', href }, URL, localStorage: { getItem: (key) => themeStorage.get(key) ?? null, setItem: (key, value) => themeStorage.set(key, value) },
-    history: { replaceState() {} }, navigator: { clipboard: { async writeText() {} } },
+    history: { replaceState() {} }, navigator: { clipboard: { async writeText(value) { copied.push(value); } } },
     setInterval: (fn) => { timers.set(++timerId, fn); return timerId; }, clearInterval: (id) => timers.delete(id),
     setTimeout: (fn) => { timers.set(++timerId, fn); return timerId; }, clearTimeout: (id) => timers.delete(id),
     sessionStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
@@ -44,7 +44,7 @@ async function page(route, storage = new Map(), { href = 'http://localhost/', ap
   vm.runInContext(await readFile(new URL('../web/app.js', import.meta.url), 'utf8'), context);
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   await settle();
-  return { element, calls, settle, storage, themeStorage, themeChoices, context, tick: async () => { const next = timers.entries().next().value; if (next) { timers.delete(next[0]); await next[1](); await settle(); } }, activate: async (node) => { node.onclick({ preventDefault() {} }); await settle(); }, submit: async (id, input) => {
+  return { element, calls, copied, settle, storage, themeStorage, themeChoices, context, tick: async () => { const next = timers.entries().next().value; if (next) { timers.delete(next[0]); await next[1](); await settle(); } }, activate: async (node) => { node.onclick({ preventDefault() {} }); await settle(); }, submit: async (id, input) => {
     const target = { input, elements: Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { value, checked: value === true }])) };
     element(id).onsubmit({ preventDefault() {}, target }); await settle(); return target;
   }, click: async (id) => { element(id).onclick(); await settle(); } };
@@ -395,6 +395,14 @@ test('batch rows submit explicit flags and reveal passwords only through deliver
     assert.fail(path);
   });
   await p.activate(p.element('profiles').children[0].children[1]);
+  const initialRow = p.element('assignment-rows').children[0];
+  assert.equal(initialRow.querySelector('[data-field="display_name"]').value, '协作助手 1');
+  assert.equal(initialRow.querySelector('[data-field="responsibility"]').value, 'general');
+  await p.click('add-assignment');
+  await p.activate(initialRow.children.at(-1));
+  await p.click('add-assignment');
+  assert.deepEqual(p.element('assignment-rows').children.map((row) => row.querySelector('[data-field="display_name"]').value), ['协作助手 2', '协作助手 3']);
+  await p.activate(p.element('assignment-rows').children[1].children.at(-1));
   const row = p.element('assignment-rows').children[0];
   row.querySelector('[data-field="display_name"]').value = 'Bob'; row.querySelector('[data-field="secret"]').value = 'fixture-bot-secret'; row.querySelector('[data-field="prefer"]').checked = false;
   await p.submit('batch-form', {}); assert.equal(p.element('delivery-password').value, 'fixture-delivery-password');
@@ -612,12 +620,42 @@ test('project guide checks the repository on Continue, blocks ambiguous settings
   assert.equal(await guide.advance(), false); assert.equal(await guide.advance(), true); assert.equal(prepared, false);
 });
 
-test('guide reveals missing verification command instead of proceeding with a hidden invalid field', async () => {
+test('automatic checks let a repository without test scripts continue without entering a command', async () => {
   const p = await page((path) => path === '/api/overview' ? { profiles: [] } : { repo: '/fixture/project', remote_name: 'team', remotes: ['team'], base_branch: 'main', branches: ['main'], tests: [] });
-  const details = { tagName: 'DETAILS', open: false }, command = requiredField('test-command'); command.parentElement = details;
-  const guide = guidedForm(p, 'admin', { repo_mode: 'existing', repo: '/fixture/project' }, [[command], []]);
-  assert.equal(await guide.advance(), false); assert.equal(guide.panels[0].hidden, false); assert.equal(details.open, true); assert.equal(command.reported, true);
-  assert.equal(p.element('project-options').open, true); assert.equal(p.calls.filter((path) => path === '/api/project-check').length, 1);
+  const guide = guidedForm(p, 'admin', { repo_mode: 'existing', repo: '/fixture/project' });
+  assert.equal(await guide.advance(), false);
+  assert.equal(guide.panels[0].hidden, true); assert.equal(guide.panels[1].hidden, false);
+  assert.equal(p.element('test-command').required, false); assert.equal(p.element('test-command').disabled, true);
+  assert.match(p.element('test-command-status').textContent, /基础改动检查.*直接继续.*人工审核/);
+  assert.equal(p.element('test-command-choices').hidden, true);
+  assert.ok(!p.calls.includes('/api/admin-prepare'));
+});
+
+test('recommended checks show their source, allow switching and preserve a manually entered command', async () => {
+  const tests = [{ command: 'pnpm test', label: '测试', source: 'package.json 的 scripts.test' }, { command: 'pnpm run lint', label: '代码规范检查', source: 'package.json 的 scripts.lint' }];
+  const p = await page((path) => path === '/api/overview' ? { profiles: [] } : { repo: '/fixture/project', remote_name: 'team', remotes: ['team'], base_branch: 'main', branches: ['main'], tests });
+  guidedForm(p, 'admin', { repo_mode: 'existing', repo: '/fixture/project' });
+  await p.click('check-project');
+  const choices = p.element('test-command-choices');
+  assert.equal(choices.hidden, false); assert.equal(choices.children.length, 2); assert.equal(p.element('test-command').value, 'pnpm test');
+  assert.match(choices.children[0].children[2].textContent, /scripts.test/); assert.equal(choices.children[0]['aria-pressed'], 'true');
+  await p.activate(choices.children[1]);
+  assert.equal(p.element('test-command').value, 'pnpm run lint'); assert.equal(choices.children[0]['aria-pressed'], 'false'); assert.equal(choices.children[1]['aria-pressed'], 'true');
+  p.element('test-command').value = 'node scripts/check.mjs'; p.element('test-command').oninput();
+  assert.ok(choices.children.every((choice) => choice['aria-pressed'] === 'false'));
+  await p.click('check-project');
+  assert.equal(p.element('test-command').value, 'node scripts/check.mjs');
+  p.element('test-mode').value = 'auto'; p.element('test-mode').onchange();
+  assert.equal(p.element('test-command').value, 'pnpm test'); assert.equal(p.element('test-command').disabled, true);
+});
+
+test('switching projects clears previous commands so the next project gets its own recommendation', async () => {
+  const p = await page((path, input) => path === '/api/overview' ? { profiles: [] } : { repo: input.repo, remote_name: 'team', remotes: ['team'], base_branch: 'main', branches: ['main'], tests: [{ command: input.repo.endsWith('second') ? 'go test ./...' : 'npm test' }] });
+  guidedForm(p, 'admin', { repo_mode: 'existing', repo: '/fixture/first' });
+  await p.click('check-project'); assert.equal(p.element('test-command').value, 'npm test');
+  p.element('admin-repo').value = '/fixture/second'; p.element('admin-repo').onchange();
+  assert.equal(p.element('test-command').value, ''); assert.equal(p.element('test-command-choices').hidden, true);
+  await p.click('check-project'); assert.equal(p.element('test-command').value, 'go test ./...');
 });
 
 test('member guide reads the invite before showing the destination and keeps failed invites on step one', async () => {
@@ -707,4 +745,19 @@ test('a stopped robot only offers restoring its connection as the primary next a
   assert.equal(p.element('profile-done').hidden, true);
   assert.equal(p.element('polling-help').hidden, true);
   assert.match(p.element('next-step').textContent, /启动机器人连接/);
+});
+
+test('known projects and existing connections are selectable without typing paths', async () => {
+  const p = await page((path) => path === '/api/overview' ? { profiles: [], defaults: { repo: '/fixture/alice', projects: ['/fixture/alice', '/fixture/bob'], configs: [{ agent_id: 'alice', repo: '/fixture/alice', config_path: '/private/alice-peer.json' }] } } : assert.fail(path));
+  assert.deepEqual(p.element('admin-project-choice').children.map((option) => option.value), ['/fixture/alice', '/fixture/bob', '']);
+  assert.equal(p.element('admin-existing-repo').hidden, true);
+  p.element('admin-project-choice').value = '/fixture/bob'; p.element('admin-project-choice').onchange();
+  assert.equal(p.element('admin-form').elements.repo.value, '/fixture/bob');
+  p.element('admin-project-choice').value = ''; p.element('admin-project-choice').onchange();
+  assert.equal(p.element('admin-existing-repo').hidden, false);
+  assert.equal(p.element('existing-config-path').value, '/private/alice-peer.json');
+  assert.equal(p.element('existing-config-manual').hidden, true);
+  p.element('existing-config-choice').value = ''; p.element('existing-config-choice').onchange();
+  assert.equal(p.element('existing-config-manual').hidden, false);
+  assert.equal(p.element('existing-config-path').value, '');
 });

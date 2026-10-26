@@ -155,6 +155,13 @@ body[data-theme="night"] .project-icon.sand { color: #cfbc9b; background: #3c372
 .binding-caption { text-align: center; font-size: 11px; color: var(--muted); line-height: 1.9; }
 .command-preview { padding: 17px; margin-top: 13px; background: var(--wash); border-radius: 10px; }
 .command-preview code { font: 11px/1.8 ui-monospace, "PingFang SC", monospace; overflow-wrap: anywhere; }
+.verification-settings { margin-top: 24px; }
+.command-choices { display: grid; gap: 8px; margin-top: 12px; }
+.command-choice { display: flex; flex-direction: column; gap: 5px; min-width: 0; width: 100%; text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.command-choice[aria-pressed="true"] { border-color: var(--accent); background: var(--wash); }
+.command-choice:hover { border-color: var(--accent); }
+.command-choice code { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.command-choice span { font-size: 11px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
 .success-scene { text-align: center; padding-top: 40px; }
 .success .art-tile { background: var(--accent); color: var(--on-accent); border: 0; border-radius: 50%; transform: none; animation: success-stamp 550ms cubic-bezier(.2,.9,.3,1.2) both; }
 .success-project { display: inline-flex; align-items: center; text-align: left; gap: 13px; margin: 36px auto 32px; padding: 18px 23px; background: var(--wash); border-radius: 15px; max-width: 100%; }
@@ -362,3 +369,8 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; fo
   .project-card-info { column-gap: 10px; grid-template-columns: 34px minmax(0, 1fr); }
   .project-card-info h3 { font-size: 13px; }
 }
+
+#local-picker { width: min(640px, calc(100vw - 32px)); max-height: 85vh; padding: 24px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 18px; }
+#local-picker::backdrop { background: #0009; }
+.local-picker-entries { display: grid; gap: 6px; max-height: 45vh; overflow-y: auto; margin: 16px 0; }
+.local-picker-entries button { text-align: left; overflow-wrap: anywhere; }
