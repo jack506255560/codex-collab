@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "N-0712E4C8DAE168B7FF9DEAF6C58EDF28",
+  "seq": 1,
+  "event_id": "bf774f2b-12d9-44b1-a968-925018a551e4",
+  "actor_id": "xuym",
+  "occurred_at": "2026-10-29T04:41:06.966Z",
+  "idempotency_key": "inbox-message:xuym:c45b98f627bfebab80bddd186c24f33813489b1f35cf1351e268e9f9a7d84bbf",
+  "type": "received",
+  "spec_hash": "a6b61f6e56e10cbb79c27ea7cc81b898eee3ffb5f07f43d031204d21d93a36d9",
+  "team_hash": "348b58c3ab32d0c7887b9033e380fc1bdd5e4562b18c6c29930ccf906c6f0018",
+  "signature": "80SZGzbtfSQvBFq7ETRJ8uQ8+F5zizP7fLnl2cxC7byUTYOh+ayt7m4U1o6ehlfSW6/y2iqJcxR7ogSSIMlHDQ=="
+}

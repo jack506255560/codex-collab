@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "N-0712E4C8DAE168B7FF9DEAF6C58EDF28",
+  "repo": "git@github.com:jack506255560/codex-collab.git",
+  "target_agent": "xuym",
+  "chat_id": "wrFyLUCAAAnDAr0HDxu8j2yDol92ZEdQ",
+  "sender_id": "woFyLUCAAARyLpTbzdGRCCG62Cqeiz9Q",
+  "content": "你好，你能做什么",
+  "message_key": "inbox-message:xuym:c45b98f627bfebab80bddd186c24f33813489b1f35cf1351e268e9f9a7d84bbf",
+  "admin_dispatch": true
+}
