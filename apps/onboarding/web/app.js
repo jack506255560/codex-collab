@@ -3,7 +3,8 @@ let currentId, pending, discovery, timer, busy = false, reviewVersion = null, re
 let repositoryPolicy, currentProjectId, currentProject, projectSignature, ownReturnProject;
 let testRecommendations = [];
 let projectChecked = false, assignmentSequence = 0;
-let localPicker;
+let localPicker, profileSnapshot, profileActionError;
+const bindingPreparation = new Set();
 let viewEpoch = 0, currentView = 'home', completing = false, deliveryTarget;
 const storageKey = 'codex-collab-onboarding';
 function remember(value) { try { if (value) sessionStorage.setItem(storageKey, JSON.stringify(value)); else sessionStorage.removeItem(storageKey); } catch {} }
@@ -81,7 +82,13 @@ async function action(fn) {
   const buttons = new Map([...document.querySelectorAll('button')].map((button) => [button, button.disabled]));
   for (const button of buttons.keys()) button.disabled = true;
   document.body?.setAttribute('aria-busy', 'true');
-  try { await fn(); } catch (error) { notice(error.message); $('notice').scrollIntoView?.({ block: 'nearest', behavior: 'auto' }); } finally {
+  try { await fn(); } catch (error) {
+    if (currentView === 'profile' && profileSnapshot?.id === currentId) {
+      profileActionError = { id: currentId, kind: profileGuidance(profileSnapshot).kind, message: error.message, copyText: error.copyText };
+      renderRecovery(profileSnapshot, profileGuidance(profileSnapshot));
+    }
+    notice(error.message); $('notice').scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
+  } finally {
     busy = false; for (const [button, disabled] of buttons) button.disabled = disabled;
     document.body?.removeAttribute('aria-busy');
   }
@@ -248,14 +255,46 @@ async function completeVerification() {
     pending = null; await loadProfile(profile.id);
   } finally { completing = false; }
 }
+// Choose a single next action from observed state, never from a copied command
+// or a user acknowledgement. Waiting for approval must not offer a bypass.
+function profileGuidance(value) {
+  if (value.phase !== 'ready') {
+    if (value.phase === 'imported') return { kind: 'verify', title: '先确认你的群身份。', message: '机器人资料已保存。下一步到协作群发送验证码，确认这是你本人使用的机器人。' };
+    if (value.error) return { kind: 'resume', title: '接入停在这一步。', message: '已完成的步骤和身份会保留。处理下方问题后，只需重试当前步骤。' };
+    if (value.phase === 'waiting' && !value.own_agent) return { kind: 'wait', title: '正在等同事确认。', message: '申请已提交，正在自动等待管理员确认。你不用重复申请，也不用重新填写资料；批准后这里会自动继续。' };
+    return { kind: 'wait', title: '正在准备你的项目。', message: value.phase === 'waiting' ? '身份已验证，正在自动完成本人机器人接入。请稍等，不用重复操作。' : '正在完成群身份验证后的本机配置。完成后会自动进入下一步。' };
+  }
+  if (value.project_setup?.mcp_configured === false || value.project_setup?.skill_installed === false) return { kind: 'repair', title: '先补齐项目连接配置。', message: '项目所需的连接配置不完整。点击修复，只更新工具生成的配置，不重建你的身份或对话绑定。' };
+  if (!value.runner?.online) return { kind: 'start', title: '连接已暂停。', message: value.connection_enabled === false ? '机器人连接已手动停止，不会自动重启。需要接任务时，点击下方按钮启动机器人连接。' : '后台机器人暂未运行。点击下方按钮启动机器人连接，已有身份与对话绑定会保留。' };
+  if (value.runner.wecom !== 'authenticated') return { kind: 'authenticate', title: '正在连接企业微信。', message: '本机进程已启动，正在等待企业微信认证。认证通过后会自动继续；若一直没有变化，展开“遇到问题？”检查连接。' };
+  if (!value.desktop?.binding) return { kind: 'bind', title: '最后，连接你的对话。', message: '只需在 Codex 打开这个项目，再把启用指令发到你希望绑定的对话。这里会自动确认结果。' };
+  if (!value.poll_recent) return { kind: 'poll', title: '对话已绑定。', message: '正在等待实际轮询记录。请在已绑定的对话中确认协作自动化已启用；无需重新绑定或新建身份。' };
+  if (value.can_receive_tasks) return { kind: 'done', title: '连接已就绪。', message: '已观察到机器人认证、真实对话绑定和最近轮询。可以在协作群 @ 机器人发送任务。请保持绑定对话的协作自动化启用。' };
+  return { kind: 'wait', title: '正在确认连接状态。', message: '正在核对实际连接条件，确认后会自动更新。复制指令或点击确认不会被当作接入成功。' };
+}
 function renderSteps(value) {
   const verified = value.phase !== 'imported', approved = ['configuring', 'ready'].includes(value.phase);
   const steps = [['项目与机器人资料', true], ['群验证与本机配置', verified && value.phase === 'ready' && value.project_setup?.mcp_configured && value.project_setup?.skill_installed], ['绑定 Codex 会话', !!value.desktop?.binding], ['开始接收群任务', !!value.can_receive_tasks]];
   if (value.role !== 'admin') steps.splice(1, 0, [value.own_agent ? '确认机器人身份' : '同事确认接入', approved]);
   $('setup-steps').replaceChildren(); let active = false;
   for (const [label, done] of steps) { const row = text('li', `${done ? '✓ ' : ''}${label}`); row.className = done ? 'done' : !active ? 'active' : ''; if (!done) active = true; $('setup-steps').append(row); }
-  const stopped = value.phase === 'ready' && !value.runner?.online;
-  $('next-step').textContent = value.error ? '接入暂时停在这里。处理下方问题后点击“继续接入”。' : value.can_receive_tasks ? '已观察到实际轮询，可以在协作群 @ 机器人发送任务。请保持当前对话的协作自动化启用。' : value.phase === 'waiting' ? value.own_agent ? '身份已验证，正在自动完成接入。' : '申请已提交，正在自动等待管理员确认。管理员工作台会自动显示申请。' : value.phase !== 'ready' ? '按当前提示继续，完成后向导会自动进入下一步。' : stopped ? '机器人连接已停止。需要接任务时点击“启动机器人连接”。' : !value.desktop?.binding ? '在 Codex 打开此项目，加载项目 MCP 和 Skill，再把启用指令发到要绑定的对话。' : !value.poll_recent ? '对话已绑定，正在等待实际轮询记录。' : '正在检查机器人认证与连接状态。';
+}
+function renderRecovery(value, guidance) {
+  if (profileActionError && (profileActionError.id !== value.id || profileActionError.kind !== guidance.kind)) profileActionError = null;
+  const error = value.error || profileActionError?.message;
+  $('profile-recovery').hidden = !error && guidance.kind !== 'repair';
+  $('profile-manual-copy').hidden = !profileActionError?.copyText;
+  $('profile-manual-copy').textContent = profileActionError?.copyText || '';
+  $('profile-error').textContent = error || (guidance.kind === 'repair' ? '缺少或未能识别工具生成的项目连接配置。' : '');
+  $('profile-recovery-note').textContent = value.phase === 'ready' ? '已有项目、身份和绑定会保留。请按当前提示重试；凭据更新或重新绑定仍需单独确认。' : '项目选择和已保存的身份会保留，不需要重新填写机器人资料。';
+}
+function renderBinding(value) {
+  const prepared = bindingPreparation.has(value.id);
+  $('binding-project-step').hidden = prepared;
+  $('binding-command-step').hidden = !prepared;
+  $('binding-project-path').textContent = value.repo;
+  $('binding-step-label').textContent = prepared ? '02 / 03 · 把指令发到目标对话' : '01 / 03 · 在 Codex 打开项目';
+  $('binding-wait').textContent = '发送后，本页会自动检查对话绑定和实际轮询。复制成功不代表已经启用。';
 }
 function watchProfile(id, epoch) {
   let failures = 0;
@@ -277,7 +316,9 @@ function watchProfile(id, epoch) {
 async function loadProfile(id, { localOnly = false } = {}) {
   repositoryPolicy = null; $('repository-policy-form').hidden = true;
   if (currentView !== 'profile' || currentId !== id) {
-    $('admin-tools').open = false; $('connection-details').open = false;
+    $('admin-tools').open = false; $('connection-details').open = false; profileSnapshot = null; profileActionError = null;
+    $('polling-feedback').textContent = ''; $('copy-binding-project').textContent = '复制项目路径';
+    $('profile-recovery').hidden = true; $('profile-repair').hidden = true; $('diagnostic-result').replaceChildren();
     $('profile-heading').textContent = '正在读取连接…'; $('profile-art').dataset.state = 'waiting';
     for (const key of ['binding', 'polling-help', 'profile-done', 'profile-start', 'admin-tools', 'pending-requests', 'profile-back']) $(key).hidden = true;
     for (const key of ['profile-title', 'profile-repo', 'next-step', 'config-path']) $(key).textContent = '';
@@ -293,15 +334,19 @@ async function loadProfile(id, { localOnly = false } = {}) {
   renderProfile(value); watchProfile(id, epoch); return value;
 }
 function renderProfile(value, automatic = false) {
-  const id = value.id; renderSteps(value);
-  const ready = value.phase === 'ready', bound = !!value.desktop?.binding, complete = !!value.can_receive_tasks;
-  $('profile-heading').textContent = complete ? '就这么简单。' : ready && !value.runner?.online ? '连接已暂停。' : ready && !bound ? '最后，连接你的对话。' : ready ? '对话已绑定。' : '正在准备你的项目。';
+  profileSnapshot = value;
+  const id = value.id, guidance = profileGuidance(value); renderSteps(value);
+  const complete = guidance.kind === 'done';
+  $('profile-heading').textContent = guidance.title;
+  $('next-step').textContent = guidance.message;
   const state = complete ? 'success' : 'waiting';
   if ($('profile-art').dataset.state !== state) $('profile-art').dataset.state = state;
   $('profile-step-progress').hidden = complete;
   $('profile-done').hidden = !complete;
-  $('polling-help').hidden = !ready || !bound || !!value.poll_recent || !value.runner?.online;
-  $('profile-start').hidden = !ready || !!value.runner?.online;
+  $('polling-help').hidden = guidance.kind !== 'poll';
+  $('profile-start').hidden = guidance.kind !== 'start';
+  $('profile-repair').hidden = guidance.kind !== 'repair';
+  renderRecovery(value, guidance);
   const requests = value.requests || [];
   $('pending-requests').hidden = !requests.length;
   $('pending-requests').textContent = requests.length ? `${requests.length} 位同事等待你的确认 →` : '';
@@ -309,19 +354,20 @@ function renderProfile(value, automatic = false) {
   $('reset-conversation').hidden = value.phase !== 'ready'; $('reset-robot').hidden = value.phase !== 'ready';
   $('profile-title').textContent = `${value.display_name && value.display_name !== value.agent_id ? `${value.display_name}（${value.agent_id}）` : value.agent_id} · 我的机器人`; $('profile-repo').textContent = `${value.repo}${value.base_branch ? ` · 基准：${value.remote_name || '远程'}/${value.base_branch}` : ''}`;
   $('profile-diagnostics').hidden = !value.config_path; $('config-path').textContent = value.config_path || '';
-  $('checks').replaceChildren(); $('progress').replaceChildren(); $('binding').hidden = !ready || bound || !value.runner?.online; $('runner-actions').hidden = value.phase !== 'ready'; $('diagnostic-actions').hidden = value.phase !== 'ready'; $('admin-tools').hidden = value.role !== 'admin' || value.phase !== 'ready';
+  $('checks').replaceChildren(); $('progress').replaceChildren(); $('binding').hidden = guidance.kind !== 'bind'; $('runner-actions').hidden = value.phase !== 'ready'; $('diagnostic-actions').hidden = value.phase !== 'ready'; $('admin-tools').hidden = value.role !== 'admin' || value.phase !== 'ready';
   if (value.phase === 'ready') {
-    $('binding-text').textContent = value.binding_prompt; $('binding-details').textContent = value.detailed_binding_prompt || value.binding_prompt;
+    $('binding-text').textContent = value.binding_prompt; $('binding-details').textContent = value.detailed_binding_prompt || value.binding_prompt; renderBinding(value);
     for (const [label, ok, wait] of [['项目 MCP', value.project_setup?.mcp_configured, '待配置'], ['项目 Skill', value.project_setup?.skill_installed, '待配置'], ['企业微信机器人', value.runner?.wecom === 'authenticated', value.runner?.online ? '连接中' : '已停止'], ['目标 Codex 对话', !!value.desktop?.binding, '待绑定'], ['对话实际轮询', value.poll_recent, value.poll_observed ? '最近未观察到轮询' : '待观察'], ['可接收任务', value.can_receive_tasks, '尚未满足条件']]) {
       const row = document.createElement('div'); row.className = 'check'; const badge = text('span', ok ? '已就绪' : wait); badge.className = `badge${ok ? '' : ' pending'}`; row.append(text('span', label), badge); $('checks').append(row);
     }
-    $('checks').append(text('p', '轮询状态来自实际调用记录。自动化是否启用，请在绑定对话的 Codex 自动化中确认。'));
-  } else {
-    const phases = { imported: '机器人配置已保存，等待群身份验证。', initializing: '团队初始化尚未完成。', configuring: '正在配置本机项目。', verified: '正在提交入队申请。', waiting: value.own_agent ? '本人机器人申请已提交，正在自动完成入队。' : '申请已提交，正在自动等待管理员确认。' };
-    $('progress').append(text('p', phases[value.phase] || value.phase), button(value.phase === 'imported' ? '连接分配的机器人' : '继续接入', async () => {
-      if (value.phase === 'imported') { pending = { type: 'member', id }; await verifyView(await api('discovery', { profile_id: id })); }
+    $('checks').append(text('p', '轮询状态来自实际调用记录。连接就绪不代表真实任务收发测试已通过，也不保证未来自动唤醒；自动化是否启用，请在绑定对话的 Codex 自动化中确认。'));
+  } else if (guidance.kind === 'verify' || guidance.kind === 'resume') {
+    const next = button(guidance.kind === 'verify' ? '连接分配的机器人' : '重试当前步骤 →', async () => {
+      if (guidance.kind === 'verify') { pending = { type: 'member', id }; await verifyView(await api('discovery', { profile_id: id })); }
       else { try { await api('resume', { id }); } finally { await loadProfile(id); } }
-    }));
+    });
+    next.className = 'button primary';
+    $('progress').append(text('p', guidance.kind === 'verify' ? '下一步：用你自己的企业微信账号完成群验证。' : '下一步：问题处理好后，继续原来的接入。'), next);
   }
   if (value.error) notice(value.error);
   $('members').replaceChildren(); $('routes').replaceChildren(); $('owners').replaceChildren();
@@ -595,21 +641,61 @@ $('retry-code').onclick = () => action(async () => {
 $('confirm-code').onclick = () => action(completeVerification);
 $('existing-form').onsubmit = (event) => { event.preventDefault(); action(async () => { const profile = await api('existing', values(event.target)); await loadProfile(profile.id); }); };
 $('issue-form').onsubmit = (event) => { event.preventDefault(); action(async () => { const input = values(event.target); input.id = currentId; input.prefer = event.target.elements.prefer.checked; input.commands_enabled = event.target.elements.commands_enabled.checked; const result = await api('issue', input); event.target.reset(); await loadProfile(currentId); await showDelivery(currentId, result.invite_id); notice('接入包已生成。下载文件交给指定成员，密码请单独发送。'); }); };
+function diagnosticRecovery(check, id = currentId) {
+  if (check.ok) return null;
+  const actions = {
+    mcp: ['修复项目连接配置', repairProject],
+    skill: ['修复项目连接配置', repairProject],
+    runner: ['启动机器人连接', async () => { await api('runner', { id: currentId, command: 'start' }); await loadProfile(currentId); }],
+    wecom: ['查看更换凭据的影响', () => openReset(currentId, 'robot')],
+    binding: ['复制启用指令', () => copyProfileBinding()],
+    poll: ['复制原对话的启用指令', () => copyProfileBinding()],
+  };
+  const selected = Object.hasOwn(actions, check.key) && actions[check.key];
+  if (!selected) return null;
+  const next = button(selected[0], () => { if (id === currentId && currentView === 'profile') return selected[1](); });
+  next.className = 'secondary'; return next;
+}
 $('run-diagnostics').onclick = () => action(async () => {
-  const value = await api('diagnostics', { id: currentId }); $('diagnostic-result').replaceChildren();
-  for (const check of value.checks) $('diagnostic-result').append(text('p', `${check.ok ? '✓' : '待处理'} ${check.label}${check.action ? '：' + check.action : ''}`));
+  const id = currentId, epoch = viewEpoch;
+  const value = await api('diagnostics', { id });
+  if (epoch !== viewEpoch || id !== currentId) return;
+  $('diagnostic-result').replaceChildren();
+  for (const check of value.checks) {
+    const row = text('div', ''); row.className = 'diagnostic-check';
+    row.append(text('p', `${check.ok ? '✓' : '待处理'} ${check.label}${check.action ? '：' + check.action : ''}`));
+    const next = diagnosticRecovery(check); if (next) row.append(next);
+    $('diagnostic-result').append(row);
+  }
   $('diagnostic-result').append(text('p', value.note));
 });
-$('repair-project').onclick = () => action(async () => {
+async function repairProject() {
+  profileActionError = null;
   const value = await api('repair', { id: currentId }); await loadProfile(currentId); notice(value.next_step);
-});
+}
+$('repair-project').onclick = () => action(repairProject);
+$('profile-repair').onclick = () => action(repairProject);
 $('refresh').onclick = () => action(() => loadProfile(currentId));
-$('start').onclick = () => action(async () => { await api('runner', { id: currentId, command: 'start' }); await loadProfile(currentId); });
+$('start').onclick = () => action(async () => { profileActionError = null; await api('runner', { id: currentId, command: 'start' }); await loadProfile(currentId); });
 $('stop').onclick = () => action(async () => { await api('runner', { id: currentId, command: 'stop' }); await loadProfile(currentId); });
 $('copy-config-path').onclick = () => action(() => navigator.clipboard.writeText($('config-path').textContent));
 $('copy-code').onclick = () => copyFeedback('copy-code', '已复制，去群里发送');
 $('copy-binding-details').onclick = () => action(() => navigator.clipboard.writeText($('binding-details').textContent));
-$('copy-binding').onclick = () => copyFeedback('copy-binding', '已复制，发到 Codex 对话');
+$('copy-binding-project').onclick = () => copyFeedback('copy-binding-project', '项目路径已复制');
+$('binding-project-ready').onclick = () => {
+  if (!profileSnapshot || currentView !== 'profile') return;
+  bindingPreparation.add(currentId); renderBinding(profileSnapshot);
+  $('binding-command-title').focus?.({ preventScroll: true });
+};
+$('binding-project-back').onclick = () => { bindingPreparation.delete(currentId); if (profileSnapshot) renderBinding(profileSnapshot); };
+$('copy-binding').onclick = () => copyFeedback('copy-binding', '已复制，请发到 Codex 对话');
+async function copyProfileBinding() {
+  if (!profileSnapshot?.binding_prompt) throw new Error('暂时无法读取启用指令，请刷新连接状态后重试。');
+  await copyGuidanceText(profileSnapshot.binding_prompt);
+  $('polling-feedback').textContent = '已复制。请发到原来已绑定的对话，确认协作自动化已启用；这里会继续等待真实轮询。';
+  notice('已复制启用指令，请发送到你希望绑定的对话；已经绑定时请使用原对话。');
+}
+$('polling-copy-binding').onclick = () => action(copyProfileBinding);
 async function openReset(id, kind) {
   clearInterval(timer); clearTimeout(timer); viewEpoch++; resetPlan = null; resetDiscovery = null;
   const plan = await api('reset-preview', { id, kind }); resetPlan = plan; currentId = id;
@@ -703,9 +789,18 @@ $('reissue-form').onsubmit = (event) => { event.preventDefault(); action(async (
   notice('新接入包与密码已生成，旧包已失效。请下载新文件，在“加入团队”中使用新密码。');
 }); };
 $('hide-delivery').onclick = () => action(async () => { $('delivery-panel').hidden = true; $('delivery-password').value = ''; $('reissue-secret').value = ''; $('reissue-form').hidden = true; deliveryTarget = null; watchProfile(currentId, viewEpoch); });
+async function copyGuidanceText(content) {
+  try { await navigator.clipboard.writeText(content); }
+  catch {
+    const error = new Error('浏览器未允许自动复制。请选中下方内容手动复制，再回到原步骤继续。');
+    error.copyText = content; throw error;
+  }
+}
 async function copyFeedback(id, copiedLabel) {
   return action(async () => {
-    await navigator.clipboard.writeText($(id === 'copy-code' ? 'code' : 'binding-text').textContent);
+    const source = { 'copy-code': 'code', 'copy-binding': 'binding-text', 'copy-binding-project': 'binding-project-path' }[id];
+    if (!source) throw new Error('请重新打开需要复制的内容。');
+    await copyGuidanceText($(source).textContent);
     $(id).textContent = copiedLabel;
     animateScene($(id));
   });

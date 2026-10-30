@@ -337,7 +337,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; fo
 #profile-art[data-state="success"] .art-tile svg { display: none; }
 #profile-art[data-state="success"] .art-tile::after { content: '✓'; font-size: 29px; }
 #profile-art[data-state="waiting"] .art-tile { animation: settle-tile 650ms ease both; }
-#profile > .step-actions:has(> [hidden] + [hidden]) { display: none; }
+#profile > .step-actions:not(:has(> button:not([hidden]))) { display: none; }
 #pending-requests { display: flex; margin: 26px auto; }
 #admin-tools { border-top: 1px solid var(--line); padding-top: 22px; }
 #delivery-panel { background: var(--wash); padding: 18px; border-radius: 12px; margin-top: 24px; }
@@ -374,3 +374,21 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; fo
 #local-picker::backdrop { background: #0009; }
 .local-picker-entries { display: grid; gap: 6px; max-height: 45vh; overflow-y: auto; margin: 16px 0; }
 .local-picker-entries button { text-align: left; overflow-wrap: anywhere; }
+
+/* One observed next action at a time; technical recovery stays available below. */
+.guided-action { text-align: center; }
+.guided-action > p { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.guided-action > .primary { margin: 22px auto 0; }
+#binding h2 { text-align: center; font-size: 18px; margin: 0 0 14px; }
+#binding .eyebrow { margin: 24px 0 14px; text-align: center; }
+#binding .help-note { line-height: 1.9; }
+#binding-project-step > button, #binding-command-step > button { display: flex; margin: 16px auto; }
+#binding-project-path { overflow-wrap: anywhere; white-space: pre-wrap; }
+#binding-wait { text-align: center; margin-top: 18px; }
+#binding-command-title:focus { outline: none; }
+#polling-help { text-align: center; line-height: 1.9; }
+#polling-help > button { margin: 14px auto; }
+.recovery-note { border: 1px solid var(--line); border-left: 3px solid #a47750; border-radius: 10px; padding: 16px; margin: 20px 0; font-size: 12px; line-height: 1.9; overflow-wrap: anywhere; }
+.recovery-note > .help-note { margin-top: 8px; }
+.diagnostic-check { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.9; }
+.diagnostic-check > button { margin-top: 10px; }

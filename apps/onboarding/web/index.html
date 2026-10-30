@@ -513,8 +513,12 @@
 </p>
 <p id="next-step" class="next-step" role="status">
 </p>
-<div id="progress">
+<div id="profile-recovery" class="recovery-note" role="alert" hidden>
+<p id="profile-error"></p>
+<pre id="profile-manual-copy" hidden></pre>
+<p id="profile-recovery-note" class="help-note"></p>
 </div>
+<div id="progress" class="guided-action"></div>
 <div id="binding" hidden>
 <div class="binding-illustration" aria-hidden="true">
 <span class="binding-node">企微</span>
@@ -528,10 +532,22 @@
 </span>
 <span class="binding-node codex-node">⌘</span>
 </div>
-<p class="binding-caption">在 Codex 打开这个项目，把下面的指令发到你想绑定的会话。</p>
+<p id="binding-step-label" class="eyebrow"></p>
+<div id="binding-project-step">
+<h2>先在 Codex 打开这个项目</h2>
+<p class="help-note">打开 Codex 的项目选择，选择下方文件夹。已打开同一项目？直接继续。这里不会替你新建对话或更换绑定。</p>
+<pre id="binding-project-path"></pre>
+<button id="copy-binding-project" class="quiet-button">复制项目路径</button>
+<button id="binding-project-ready" class="button primary">已打开这个项目，继续 →</button>
+</div>
+<div id="binding-command-step" hidden>
+<h2 id="binding-command-title" tabindex="-1">把指令发到你想绑定的对话</h2>
+<p class="help-note">在刚才的项目中，选择希望代表这个机器人的 Codex 对话。首次使用请按 Codex 提示信任项目并加载项目工具；已打开的项目可能需要重新加载。</p>
 <pre id="binding-text">
 </pre>
 <button id="copy-binding" class="button primary">复制启用指令</button>
+<p id="binding-wait" class="help-note" role="status"></p>
+<button id="binding-project-back" class="quiet-button">← 返回项目路径</button>
 <details>
 <summary>无法识别 Skill 时使用详细指令</summary>
 <p>首次使用请信任项目并加载 MCP；已打开的项目请重新加载 MCP。</p>
@@ -540,15 +556,21 @@
 <button id="copy-binding-details">复制详细指令</button>
 </details>
 </div>
-<p id="polling-help" class="help-note" hidden>请回到已绑定的 Codex 会话，确认协作定时轮询已启用。这里会自动检查。</p>
+</div>
+<div id="polling-help" class="help-note" hidden>
+<p>03 / 03 · 等待对话发出真实轮询。请回到原来已绑定的 Codex 对话，确认协作自动化已启用；本页会自动检查。</p>
+<button id="polling-copy-binding" class="secondary">复制原对话的启用指令</button>
+<p id="polling-feedback" role="status"></p>
+</div>
 <div class="step-actions">
 <button id="profile-done" class="button primary" hidden>回到项目 →</button>
-<button id="profile-start" class="button primary" hidden>恢复机器人连接 →</button>
+<button id="profile-start" class="button primary" hidden>启动机器人连接 →</button>
+<button id="profile-repair" class="button primary" hidden>修复项目连接配置 →</button>
 </div>
 <button id="pending-requests" class="quiet-button" hidden>
 </button>
 <details id="connection-details">
-<summary>查看连接详情</summary>
+<summary>遇到问题？查看连接详情与修复</summary>
 <ol id="setup-steps" class="setup-steps">
 </ol>
 <details>

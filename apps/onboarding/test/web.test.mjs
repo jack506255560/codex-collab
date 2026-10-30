@@ -414,7 +414,7 @@ test('batch rows submit explicit flags and reveal passwords only through deliver
 test('refresh restores an imported member and approval automatically opens binding instructions', async () => {
   const storage = new Map([['codex-collab-onboarding', JSON.stringify({ profile_id: 'member' })]]);
   let phase = 'imported', approved = false, verifies = 0;
-  const profile = () => ({ ...member(phase), display_name: 'Bob', runner: { online: phase === 'ready' }, binding_prompt: 'enable Bob', detailed_binding_prompt: 'details' });
+  const profile = () => ({ ...member(phase), display_name: 'Bob', runner: { online: phase === 'ready', wecom: phase === 'ready' ? 'authenticated' : 'offline' }, binding_prompt: 'enable Bob', detailed_binding_prompt: 'details' });
   const p = await page((path) => {
     if (path === '/api/overview') return { profiles: [profile()] };
     if (path === '/api/profile?id=member') return profile();
@@ -675,17 +675,18 @@ test('member guide reads the invite before showing the destination and keeps fai
 
 test('copying the binding instruction does not finish setup until actual binding and poll progress arrive', async () => {
   const storage = new Map([['codex-collab-onboarding', JSON.stringify({ profile_id: 'member' })]]);
-  const value = { ...member('ready'), runner: { online: true }, desktop: { binding: null }, poll_recent: false, can_receive_tasks: false, binding_prompt: 'enable Bob' };
+  const value = { ...member('ready'), runner: { online: true, wecom: 'authenticated' }, desktop: { binding: null }, poll_recent: false, can_receive_tasks: false, binding_prompt: 'enable Bob' };
   const p = await page((path) => path === '/api/overview' ? { profiles: [value] } : value, storage);
   assert.equal(p.element('profile-heading').textContent, '最后，连接你的对话。');
   assert.equal(p.element('profile-done').hidden, true);
   assert.equal(p.element('polling-help').hidden, true);
+  await p.click('binding-project-ready');
   await p.click('copy-binding'); assert.match(p.element('copy-binding').textContent, /已复制/); assert.equal(p.element('profile-heading').textContent, '最后，连接你的对话。');
   value.desktop.binding = { thread_id: 'fixture-thread' }; await p.tick();
   assert.equal(p.element('profile-heading').textContent, '对话已绑定。'); assert.equal(p.element('binding').hidden, true); assert.match(p.element('next-step').textContent, /等待实际轮询/);
   assert.equal(p.element('profile-done').hidden, true); assert.equal(p.element('polling-help').hidden, false);
   value.poll_recent = true; value.can_receive_tasks = true; await p.tick();
-  assert.equal(p.element('profile-heading').textContent, '就这么简单。'); assert.equal(p.element('profile-art').dataset.state, 'success'); assert.equal(p.element('profile-step-progress').hidden, true);
+  assert.equal(p.element('profile-heading').textContent, '连接已就绪。'); assert.equal(p.element('profile-art').dataset.state, 'success'); assert.equal(p.element('profile-step-progress').hidden, true);
   assert.equal(p.element('profile-done').hidden, false); assert.equal(p.element('polling-help').hidden, true);
   assert.equal(storage.get('codex-collab-onboarding'), JSON.stringify({ profile_id: 'member' }));
 });
@@ -716,7 +717,7 @@ test('an unavailable profile cannot keep showing the previously selected robot a
 
 
 test('selecting an already connected project opens its existing robot before asking for credentials or a test command', async () => {
-  const value = { ...member('ready'), runner: { online: true }, binding_prompt: 'enable Bob' };
+  const value = { ...member('ready'), runner: { online: true, wecom: 'authenticated' }, binding_prompt: 'enable Bob' };
   const p = await page((path) => {
     if (path === '/api/overview') return { profiles: [value] };
     if (path === '/api/project-check') return { repo: value.repo, existing_profile: { id: value.id } };
@@ -760,4 +761,177 @@ test('known projects and existing connections are selectable without typing path
   p.element('existing-config-choice').value = ''; p.element('existing-config-choice').onchange();
   assert.equal(p.element('existing-config-manual').hidden, false);
   assert.equal(p.element('existing-config-path').value, '');
+});
+
+
+const guidedReady = (extra = {}) => ({
+  ...member('ready'), project_setup: { mcp_configured: true, skill_installed: true },
+  runner: { online: true, wecom: 'authenticated' }, desktop: { binding: null },
+  binding_prompt: 'enable the real target conversation', poll_recent: false, can_receive_tasks: false, ...extra,
+});
+async function guidedProfile(value, route) {
+  const storage = new Map([['codex-collab-onboarding', JSON.stringify({ profile_id: value.id })]]);
+  return page((path, body) => path === '/api/overview' ? { profiles: [value] }
+    : path.startsWith('/api/profile?') || path === '/api/progress' ? value : route ? route(path, body) : assert.fail(path), storage);
+}
+
+test('binding walks through the exact project then the command without claiming readiness', async () => {
+  const value = guidedReady({ repo: '/fixture/project with spaces/<project>' });
+  const p = await guidedProfile(value);
+  assert.equal(p.element('binding-project-step').hidden, false);
+  assert.equal(p.element('binding-command-step').hidden, true);
+  assert.equal(p.element('binding-project-path').textContent, value.repo);
+  await p.click('copy-binding-project'); assert.equal(p.copied.at(-1), value.repo);
+  assert.equal(p.element('binding-command-step').hidden, true, 'copying a path does not acknowledge opening a project');
+  await p.click('binding-project-ready');
+  assert.equal(p.element('binding-project-step').hidden, true);
+  assert.equal(p.element('binding-command-step').hidden, false);
+  assert.match(p.element('binding-step-label').textContent, /02 \/ 03/);
+  await p.click('copy-binding'); assert.equal(p.copied.at(-1), value.binding_prompt);
+  await p.tick(); assert.equal(p.element('binding-command-step').hidden, false, 'background refresh preserves the local guide step');
+  assert.equal(p.element('profile-done').hidden, true);
+  assert.ok(!p.calls.some((path) => /reset|runner|resume|verify/.test(path)));
+  await p.click('binding-project-back'); assert.equal(p.element('binding-project-step').hidden, false);
+});
+
+test('unfinished enterprise authentication precedes binding even with an old recent poll', async () => {
+  for (const status of ['connecting', 'offline', 'disconnected', '', null, undefined]) {
+    const p = await guidedProfile(guidedReady({ runner: { online: true, wecom: status }, desktop: { binding: { thread_id: 'old' } }, poll_recent: true, can_receive_tasks: true }));
+    assert.equal(p.element('profile-heading').textContent, '正在连接企业微信。');
+    assert.equal(p.element('binding').hidden, true);
+    assert.equal(p.element('polling-help').hidden, true);
+    assert.equal(p.element('profile-start').hidden, true);
+    assert.equal(p.element('profile-repair').hidden, true);
+    assert.equal(p.element('profile-done').hidden, true);
+    assert.match(p.element('next-step').textContent, /认证通过后会自动继续/);
+  }
+});
+
+test('missing generated configuration has a targeted repair action before binding', async () => {
+  for (const missing of ['mcp_configured', 'skill_installed']) {
+    const value = guidedReady({ project_setup: { mcp_configured: true, skill_installed: true, [missing]: false } });
+    const p = await guidedProfile(value, (path, body) => {
+      assert.equal(path, '/api/repair'); assert.deepEqual(body, { id: value.id });
+      value.project_setup[missing] = true; return { next_step: '请在 Codex 重新加载项目工具。' };
+    });
+    assert.equal(p.element('profile-repair').hidden, false);
+    assert.equal(p.element('binding').hidden, true);
+    assert.equal(p.element('profile-start').hidden, true);
+    assert.equal(p.element('profile-recovery').hidden, false);
+    await p.click('profile-repair');
+    assert.equal(p.element('profile-repair').hidden, true);
+    assert.equal(p.element('binding').hidden, false);
+    assert.equal(p.element('profile-recovery').hidden, true);
+    assert.ok(!p.calls.includes('/api/runner'));
+  }
+});
+
+test('waiting for administrator approval is passive and cannot auto-approve or resubmit', async () => {
+  const p = await guidedProfile(member('waiting'));
+  assert.equal(p.element('progress').children.length, 0);
+  assert.equal(p.element('profile-heading').textContent, '正在等同事确认。');
+  assert.match(p.element('next-step').textContent, /不用重复申请/);
+  await p.tick();
+  assert.ok(!p.calls.some((path) => /approve|resume|verify|discovery/.test(path)));
+});
+
+test('persisted enrollment errors retry only the saved step, keeping identity and project', async () => {
+  const value = { ...member('configuring'), error: 'Git 登录尚未完成 <script>not HTML</script>' };
+  const p = await guidedProfile(value, (path, body) => {
+    assert.equal(path, '/api/resume'); assert.deepEqual(body, { id: value.id });
+    Object.assign(value, guidedReady(), { error: null }); return value;
+  });
+  assert.equal(p.element('profile-recovery').hidden, false);
+  assert.equal(p.element('profile-error').textContent, value.error);
+  assert.equal(p.element('progress').children[1].textContent, '重试当前步骤 →');
+  await p.activate(p.element('progress').children[1]);
+  assert.equal(p.element('profile-recovery').hidden, true);
+  assert.equal(p.element('binding').hidden, false);
+  assert.ok(!p.calls.some((path) => /admin-prepare|import|verify/.test(path)));
+});
+
+test('a failed connection start retains a contextual error and can be retried without resetting', async () => {
+  const value = guidedReady({ runner: { online: false, wecom: 'offline' }, connection_enabled: false }); let attempts = 0;
+  const p = await guidedProfile(value, (path, body) => {
+    assert.equal(path, '/api/runner'); assert.deepEqual(body, { id: value.id, command: 'start' });
+    if (++attempts === 1) return new Error('暂时无法启动，请检查网络后重试');
+    value.runner = { online: true, wecom: 'authenticated' }; return {};
+  });
+  await p.tick(); assert.equal(attempts, 0, 'a stopped connection is never silently restarted');
+  await p.click('profile-start');
+  assert.equal(p.element('profile-recovery').hidden, false);
+  assert.match(p.element('profile-error').textContent, /暂时无法启动/);
+  await p.tick(); assert.equal(p.element('profile-recovery').hidden, false, 'refresh does not erase an unresolved operation error');
+  await p.click('profile-start'); assert.equal(attempts, 2);
+  assert.equal(p.element('profile-recovery').hidden, true);
+  assert.equal(p.element('binding').hidden, false);
+});
+
+test('poll recovery copies the original binding instruction without pretending a poll occurred', async () => {
+  const value = guidedReady({ desktop: { binding: { thread_id: 'actual-thread' } } });
+  const p = await guidedProfile(value);
+  await p.click('polling-copy-binding');
+  assert.equal(p.copied.at(-1), value.binding_prompt);
+  assert.match(p.element('polling-feedback').textContent, /原来已绑定的对话/);
+  assert.equal(p.element('profile-done').hidden, true);
+  assert.equal(p.element('binding').hidden, true);
+  assert.ok(!p.calls.some((path) => /reset|resume|runner/.test(path)));
+});
+
+test('failed diagnostic checks offer matching repair actions, while successful and unknown checks do not', async () => {
+  const value = guidedReady();
+  const p = await guidedProfile(value, (path) => {
+    assert.equal(path, '/api/diagnostics');
+    return { checks: [
+      { key: 'mcp', label: '项目工具', ok: false, action: '请修复配置' },
+      { key: 'wecom', label: '企业微信认证', ok: false },
+      { key: 'binding', label: '对话', ok: false },
+      { key: 'runner', label: '后台连接', ok: true },
+      { key: '__proto__', label: '未知检查', ok: false },
+    ], note: '不创建测试任务。' };
+  });
+  await p.click('run-diagnostics');
+  const rows = p.element('diagnostic-result').children;
+  assert.equal(rows[0].children[1].textContent, '修复项目连接配置');
+  assert.equal(rows[1].children[1].textContent, '查看更换凭据的影响');
+  await p.activate(rows[2].children[1]); assert.equal(p.copied.at(-1), value.binding_prompt);
+  assert.equal(rows[3].children.length, 1);
+  assert.equal(rows[4].children.length, 1);
+  assert.ok(!p.calls.some((path) => /reset|repair|runner/.test(path)), 'rendering diagnostics never applies a recovery');
+});
+
+
+test('switching robots clears diagnostics and prevents executing a previous robot recovery', async () => {
+  const first = guidedReady(), second = guidedReady({ id: 'other', agent_id: 'carol', repo: '/fixture/carol' });
+  const p = await page((path) => {
+    if (path === '/api/overview') return { profiles: [first, second] };
+    if (path.startsWith('/api/profile?')) return path.includes('id=other') ? second : first;
+    if (path === '/api/diagnostics') return { checks: [{ key: 'mcp', label: '项目配置', ok: false }], note: '真实状态。' };
+    assert.fail(path);
+  });
+  await vm.runInContext("loadProfile('member')", p.context);
+  await p.click('binding-project-ready');
+  await p.click('run-diagnostics');
+  const oldAction = p.element('diagnostic-result').children[0].children[1];
+  await vm.runInContext("loadProfile('other')", p.context);
+  assert.equal(p.element('diagnostic-result').children.length, 0);
+  assert.equal(p.element('binding-project-step').hidden, false, 'opening another robot does not inherit the first project acknowledgement');
+  await p.activate(oldAction); assert.ok(!p.calls.includes('/api/repair'));
+  await vm.runInContext("loadProfile('member')", p.context);
+  assert.equal(p.element('binding-command-step').hidden, false, 'returning to the same robot preserves its local guide step');
+});
+
+test('clipboard denial offers literal manual-copy content without declaring a completed setup', async () => {
+  for (const bound of [false, true]) {
+    const value = guidedReady(bound ? { desktop: { binding: { thread_id: 'actual' } } } : {});
+    const p = await guidedProfile(value);
+    p.context.navigator.clipboard.writeText = async () => { throw new Error('NotAllowedError'); };
+    if (!bound) await p.click('binding-project-ready');
+    await p.click(bound ? 'polling-copy-binding' : 'copy-binding');
+    assert.equal(p.element('profile-recovery').hidden, false);
+    assert.match(p.element('profile-error').textContent, /手动复制/);
+    assert.equal(p.element('profile-manual-copy').hidden, false);
+    assert.equal(p.element('profile-manual-copy').textContent, value.binding_prompt);
+    assert.equal(p.element('profile-done').hidden, true);
+  }
 });
